@@ -1,0 +1,262 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>RAG Full Pipeline — Interview Preparation</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: Arial, sans-serif; max-width: 900px; margin: 40px auto; padding: 0 24px; color: #222; }
+    h1 { background: #1a1a2e; color: white; padding: 22px 24px; border-radius: 10px; font-size: 1.6em; margin-bottom: 24px; }
+    h2 { background: #16213e; color: white; padding: 12px 18px; border-radius: 7px; margin: 32px 0 16px; font-size: 1.15em; }
+    h3 { color: #0f3460; margin: 18px 0 8px; font-size: 1em; }
+
+    /* Comparison Table */
+    table { width: 100%; border-collapse: collapse; margin: 12px 0 24px; font-size: 0.92em; }
+    th { background: #0f3460; color: white; padding: 11px 12px; text-align: left; }
+    td { padding: 10px 12px; border: 1px solid #ddd; vertical-align: top; }
+    tr:nth-child(even) td { background: #f5f7fa; }
+    td:nth-child(3) { color: #888; }
+    td:nth-child(4) { color: #0f3460; font-weight: bold; }
+
+    /* Flow diagram */
+    .flow-wrap { background: #1a1a2e; border-radius: 10px; padding: 24px; margin: 16px 0; }
+    .flow-box { background: #16213e; border: 1px solid #0f3460; border-radius: 8px; padding: 14px 18px; margin: 8px 0; color: #e0e0e0; }
+    .flow-box .title { color: #00d4aa; font-weight: bold; font-size: 1em; margin-bottom: 6px; }
+    .flow-box .tools { color: #f0a500; font-size: 0.85em; margin-bottom: 6px; }
+    .flow-box .desc { color: #bbb; font-size: 0.88em; }
+    .arrow { text-align: center; color: #00d4aa; font-size: 1.4em; margin: 2px 0; }
+    .flow-note { color: #888; font-size: 0.82em; text-align: center; margin-top: 4px; }
+
+    /* Hypothesis box */
+    .hyp-box { background: #e8f5e9; border-left: 5px solid #2e7d32; border-radius: 6px; padding: 16px 20px; margin: 12px 0; }
+    .hyp-box .title { color: #2e7d32; font-weight: bold; font-size: 1.05em; margin-bottom: 10px; }
+    .step { display: flex; align-items: flex-start; margin: 7px 0; }
+    .stepnum { background: #2e7d32; color: white; border-radius: 50%; min-width: 24px; height: 24px; display: flex; align-items: center; justify-content: center; font-weight: bold; font-size: 0.85em; margin-right: 12px; margin-top: 1px; }
+
+    /* One liner */
+    .oneliner { background: #e8f4f8; border-left: 5px solid #0f3460; padding: 16px 18px; border-radius: 6px; font-style: italic; font-size: 1.02em; margin: 12px 0; line-height: 1.6; }
+
+    /* Cheat sheet */
+    .cheat { background: #fff8e1; border: 1px solid #f0a500; border-radius: 8px; padding: 16px 20px; margin: 12px 0; }
+    .cheat-row { display: flex; margin: 7px 0; font-size: 0.93em; }
+    .cheat-term { font-weight: bold; color: #0f3460; min-width: 220px; }
+
+    /* Tag pills */
+    .pill { display: inline-block; background: #0f3460; color: white; padding: 2px 10px; border-radius: 12px; font-size: 0.8em; margin: 2px; }
+    .pill.green { background: #2e7d32; }
+    .pill.orange { background: #e65100; }
+
+    .footer { text-align: center; color: #aaa; font-size: 0.82em; margin-top: 40px; padding-top: 16px; border-top: 1px solid #eee; }
+
+    @media print {
+      body { margin: 20px; }
+      h2 { page-break-before: auto; }
+    }
+  </style>
+</head>
+<body>
+
+  <h1>RAG Toy Project — Full Pipeline &amp; Interview Preparation</h1>
+
+  <!-- ── SECTION 1 ── -->
+  <h2>1. One-Liner (Say This First)</h2>
+  <div class="oneliner">
+    "I built a RAG system from scratch in Python — no LangChain, no vector databases.
+    Just SQLite, NumPy, and sentence transformers. It also has a Hypothesis Engine that
+    tests multiple explanations against documents and ranks them by evidence."
+  </div>
+
+  <!-- ── SECTION 2 ── -->
+  <h2>2. Full Pipeline — Industry Standard vs Your Project</h2>
+  <table>
+    <tr>
+      <th>#</th>
+      <th>Stage &amp; What It Does</th>
+      <th>Industry Uses</th>
+      <th>Your Project Uses</th>
+    </tr>
+    <tr>
+      <td>1</td>
+      <td><b>Load Documents</b><br/>Read PDFs/files into memory</td>
+      <td>LangChain PyPDFLoader</td>
+      <td>pypdf directly</td>
+    </tr>
+    <tr>
+      <td>2</td>
+      <td><b>Split Text</b><br/>Cut into overlapping chunks</td>
+      <td>LangChain RecursiveCharacterTextSplitter</td>
+      <td>Custom chunker (800 chars, 100 overlap)</td>
+    </tr>
+    <tr>
+      <td>3</td>
+      <td><b>Embed Text</b><br/>Convert text → vectors</td>
+      <td>LangChain OpenAIEmbeddings / HuggingFaceEmbeddings</td>
+      <td>sentence-transformers (all-MiniLM-L6-v2) — 384 dimensions</td>
+    </tr>
+    <tr>
+      <td>4</td>
+      <td><b>Store Vectors</b><br/>Save vectors for later search</td>
+      <td>ChromaDB, Pinecone, Weaviate, FAISS</td>
+      <td>SQLite + NumPy (built from scratch)</td>
+    </tr>
+    <tr>
+      <td>5</td>
+      <td><b>Keyword Search</b><br/>Exact word matching</td>
+      <td>LangChain BM25Retriever</td>
+      <td>rank-bm25 (BM25Okapi) directly</td>
+    </tr>
+    <tr>
+      <td>6</td>
+      <td><b>Semantic Search</b><br/>Meaning-based search</td>
+      <td>LangChain VectorStoreRetriever</td>
+      <td>Custom cosine similarity with NumPy</td>
+    </tr>
+    <tr>
+      <td>7</td>
+      <td><b>Hybrid Search</b><br/>Combine keyword + semantic</td>
+      <td>LangChain EnsembleRetriever</td>
+      <td>Custom Reciprocal Rank Fusion (RRF)</td>
+    </tr>
+    <tr>
+      <td>8</td>
+      <td><b>Reranking</b><br/>Re-score top results for accuracy</td>
+      <td>Cohere Rerank API</td>
+      <td>CrossEncoder (ms-marco-MiniLM-L-6-v2)</td>
+    </tr>
+    <tr>
+      <td>9</td>
+      <td><b>LLM Call</b><br/>Generate final answer</td>
+      <td>LangChain ChatOpenAI, ChatAnthropic</td>
+      <td>Custom llm.py (OpenAI, Anthropic, Ollama, OpenRouter)</td>
+    </tr>
+    <tr>
+      <td>10</td>
+      <td><b>Chain Everything</b><br/>Connect all steps into a pipeline</td>
+      <td>LangChain RetrievalQA, LCEL</td>
+      <td>Custom RAG class in __init__.py</td>
+    </tr>
+    <tr>
+      <td>11</td>
+      <td><b>Hypothesis Engine</b><br/>Test multiple explanations</td>
+      <td>❌ Doesn't exist anywhere</td>
+      <td>Custom built — your unique feature</td>
+    </tr>
+  </table>
+
+  <!-- ── SECTION 3 ── -->
+  <h2>3. Visual Flow Diagram</h2>
+  <div class="flow-wrap">
+
+    <div class="flow-box">
+      <div class="title">YOUR PDF FILES</div>
+      <div class="desc">Input — your data source</div>
+    </div>
+    <div class="arrow">↓</div>
+
+    <div class="flow-box">
+      <div class="title">1. CHUNKER</div>
+      <div class="tools">pypdf &nbsp;|&nbsp; ThreadPoolExecutor</div>
+      <div class="desc">Reads PDFs in parallel, splits into 800-char overlapping chunks (100-char overlap so no sentence is cut off)</div>
+    </div>
+    <div class="arrow">↓</div>
+
+    <div class="flow-box">
+      <div class="title">2. EMBEDDER</div>
+      <div class="tools">sentence-transformers &nbsp;|&nbsp; all-MiniLM-L6-v2</div>
+      <div class="desc">Converts each chunk into 384 numbers (a vector). Similar text = similar vectors. Loaded lazily on first use.</div>
+    </div>
+    <div class="arrow">↓</div>
+
+    <div class="flow-box">
+      <div class="title">3. STORE</div>
+      <div class="tools">SQLite &nbsp;|&nbsp; NumPy</div>
+      <div class="desc">Saves text as TEXT and vectors as BLOB in SQLite. No ChromaDB, no Pinecone — just the standard library + NumPy.</div>
+    </div>
+
+    <div class="arrow" style="margin-top:16px;">⬇ &nbsp;&nbsp; USER ASKS A QUESTION &nbsp;&nbsp; ⬇</div>
+
+    <div class="flow-box">
+      <div class="title">4. RETRIEVER — 4 Stages</div>
+      <div class="tools">NumPy &nbsp;|&nbsp; rank-bm25 &nbsp;|&nbsp; RRF &nbsp;|&nbsp; CrossEncoder</div>
+      <div class="desc">
+        Stage 1 — Vector Search: cosine similarity using NumPy<br/>
+        Stage 2 — BM25 Search: keyword search via rank-bm25 (cached index)<br/>
+        Stage 3 — RRF Fusion: combines both rankings into one list<br/>
+        Stage 4 — Reranking: CrossEncoder re-scores top results for final accuracy
+      </div>
+    </div>
+    <div class="arrow">↓</div>
+
+    <div class="flow-box">
+      <div class="title">5. LLM</div>
+      <div class="tools">openai SDK &nbsp;|&nbsp; anthropic SDK &nbsp;|&nbsp; Ollama &nbsp;|&nbsp; OpenRouter</div>
+      <div class="desc">Top 5 chunks + your question → streamed answer with sources and confidence score</div>
+    </div>
+
+    <div class="flow-note">↑ Query mode ends here &nbsp;|&nbsp; Solve mode continues below ↓</div>
+    <div class="arrow">↓</div>
+
+    <div class="flow-box">
+      <div class="title">6. HYPOTHESIS ENGINE (unique feature)</div>
+      <div class="tools">ThreadPoolExecutor &nbsp;|&nbsp; LLM &nbsp;|&nbsp; Retriever</div>
+      <div class="desc">
+        Step 1 — LLM generates 4 hypotheses as JSON array<br/>
+        Step 2 — Retrieve evidence for each hypothesis in parallel<br/>
+        Step 3 — LLM classifies each chunk: SUPPORTS / CONTRADICTS / IRRELEVANT<br/>
+        Step 4 — Confidence score = (supports − 0.5 × contradicts) / total<br/>
+        Step 5 — LLM generates final ranked verdict
+      </div>
+    </div>
+
+  </div>
+
+  <!-- ── SECTION 4 ── -->
+  <h2>4. Hypothesis Engine — Your Differentiator</h2>
+  <div class="hyp-box">
+    <div class="title">No tutorial RAG project has this. Lead with it in interviews.</div>
+    <p style="margin-bottom:10px; font-size:0.93em;">For a "Why" problem like <i>"Why is bubble sort slower than merge sort?"</i>:</p>
+    <div class="step"><div class="stepnum">1</div><div>LLM generates 4 distinct hypotheses as a JSON array</div></div>
+    <div class="step"><div class="stepnum">2</div><div>Evidence retrieved for each hypothesis <b>in parallel</b> using ThreadPoolExecutor</div></div>
+    <div class="step"><div class="stepnum">3</div><div>LLM classifies each evidence chunk as <b>SUPPORTS / CONTRADICTS / IRRELEVANT</b></div></div>
+    <div class="step"><div class="stepnum">4</div><div>Confidence score computed: <code>(supports − 0.5 × contradicts) / total × 100</code></div></div>
+    <div class="step"><div class="stepnum">5</div><div>Hypotheses ranked, verdict generated with sources from your actual PDFs</div></div>
+  </div>
+
+  <!-- ── SECTION 5 ── -->
+  <h2>5. Key Terms Cheat Sheet</h2>
+  <div class="cheat">
+    <div class="cheat-row"><span class="cheat-term">RAG</span><span>Retrieve relevant documents, inject as context into LLM prompt before answering</span></div>
+    <div class="cheat-row"><span class="cheat-term">Embeddings</span><span>Text converted to a list of numbers (vectors) that capture meaning — 384 dims here</span></div>
+    <div class="cheat-row"><span class="cheat-term">Cosine Similarity</span><span>Measures angle between two vectors — closer angle = more similar meaning</span></div>
+    <div class="cheat-row"><span class="cheat-term">BM25</span><span>Keyword-based ranking algorithm — great for exact terms like "bubble sort O(n²)"</span></div>
+    <div class="cheat-row"><span class="cheat-term">Hybrid Search</span><span>Combines keyword (BM25) + semantic (vector) search to cover both exact and meaning matches</span></div>
+    <div class="cheat-row"><span class="cheat-term">RRF (Reciprocal Rank Fusion)</span><span>Algorithm that merges two ranked lists into one by combining their position scores</span></div>
+    <div class="cheat-row"><span class="cheat-term">Cross-encoder Reranking</span><span>Reads query + document together to re-score accuracy (slower but more precise than embeddings)</span></div>
+    <div class="cheat-row"><span class="cheat-term">Chunking</span><span>Splitting large documents into small overlapping pieces so LLM context isn't exceeded</span></div>
+    <div class="cheat-row"><span class="cheat-term">Hypothesis Engine</span><span>Generates multiple explanations, tests each against documents, ranks by evidence confidence</span></div>
+    <div class="cheat-row"><span class="cheat-term">LangChain</span><span>Popular framework that wraps all RAG steps — you built each step yourself instead</span></div>
+    <div class="cheat-row"><span class="cheat-term">ChromaDB / Pinecone</span><span>Dedicated vector databases — you replaced them with SQLite + NumPy</span></div>
+  </div>
+
+  <!-- ── SECTION 6 ── -->
+  <h2>6. Why Built From Scratch? (Most Important Answer)</h2>
+  <div class="oneliner">
+    "Most people use LangChain which abstracts everything away. I wanted to understand what actually
+    happens under the hood — how embeddings work, how vector similarity search works, why hybrid
+    search is better than just semantic search alone. Building it from scratch means I can explain
+    every line of code in an interview."
+  </div>
+
+  <!-- ── SECTION 7 ── -->
+  <h2>7. Full Flow in One Sentence</h2>
+  <div class="oneliner">
+    PDF → pypdf → chunks → MiniLM embeddings → SQLite → BM25 + vector search →
+    RRF fusion → CrossEncoder rerank → LLM → answer with sources and confidence score.
+  </div>
+
+  <div class="footer">
+    RAG Toy Project &nbsp;|&nbsp; github.com/vamsikumarGedela/RAG-Toy-project &nbsp;|&nbsp; Built from scratch — no LangChain, no ChromaDB
+  </div>
+
+</body>
+</html>

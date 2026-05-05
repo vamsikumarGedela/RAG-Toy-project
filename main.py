@@ -5,9 +5,24 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+# First words/phrases that trigger hypothesis (solve) mode automatically
+_SOLVE_FIRST_WORDS = {"why"}
+_SOLVE_TWO_WORDS   = {"how come", "what causes", "what caused", "explain why", "how could", "what makes"}
+
+
+def _should_solve(text: str) -> bool:
+    t = text.lower().strip()
+    if t.startswith("solve:"):
+        return True
+    words = t.split()
+    if not words:
+        return False
+    if words[0] in _SOLVE_FIRST_WORDS:
+        return True
+    return " ".join(words[:2]) in _SOLVE_TWO_WORDS
+
 
 def select_provider() -> tuple:
-    """Let user pick LLM provider. Returns (provider, api_key)."""
     providers = {
         "1": ("ollama",     "Free — runs locally, no API key needed (requires Ollama installed)"),
         "2": ("openai",     "OpenAI — needs OPENAI_API_KEY"),
@@ -53,54 +68,12 @@ def select_pdf(rag) -> str | None:
         print(f"  [{i}] {name}")
 
     while True:
-        choice = input("\nSelect PDF number: ").strip()
+        choice = input("\nSelect PDF number (default 0 = All): ").strip() or "0"
         if choice == "0":
             return None
         if choice.isdigit() and 1 <= int(choice) <= len(sources):
             return sources[int(choice) - 1]
         print("  Invalid choice.")
-
-
-def cmd_ingest(pdf_dir: str) -> None:
-    from minrag import RAG
-    # Ingest doesn't need LLM — use ollama as placeholder (won't be called)
-    rag = RAG(llm_provider="ollama")
-    rag.ingest(pdf_dir)
-
-
-def cmd_query() -> None:
-    from minrag import RAG
-    provider, api_key = select_provider()
-    rag = RAG(llm_provider=provider, api_key=api_key)
-
-    pdf_filter = select_pdf(rag)
-    scope = pdf_filter or "All PDFs"
-    print(f"\nQuerying: {scope}")
-    print("Commands: 'switch' = change PDF  |  'clear' = reset history  |  'exit' = quit\n")
-
-    while True:
-        try:
-            question = input("You: ").strip()
-        except (EOFError, KeyboardInterrupt):
-            print("\nGoodbye.")
-            break
-
-        if not question:
-            continue
-        if question.lower() in {"exit", "quit", "q"}:
-            print("Goodbye.")
-            break
-        if question.lower() == "switch":
-            pdf_filter = select_pdf(rag)
-            scope = pdf_filter or "All PDFs"
-            print(f"Switched to: {scope}\n")
-            continue
-        if question.lower() == "clear":
-            rag.clear_history()
-            print("History cleared.\n")
-            continue
-
-        rag.ask(question, source_filter=pdf_filter)
 
 
 def _save_analysis(analysis: str) -> None:
@@ -111,47 +84,73 @@ def _save_analysis(analysis: str) -> None:
     print(f"  Saved to: {filename}\n")
 
 
-def cmd_solve() -> None:
+def cmd_ingest(pdf_dir: str) -> None:
+    from minrag import RAG
+    rag = RAG(llm_provider="ollama")
+    rag.ingest(pdf_dir)
+
+
+def cmd_chat() -> None:
     from minrag import RAG
     provider, api_key = select_provider()
     rag = RAG(llm_provider=provider, api_key=api_key)
 
     pdf_filter = select_pdf(rag)
     scope = pdf_filter or "All PDFs"
-    print(f"\nHypothesis Solver — Scope: {scope}")
-    print("Commands: 'switch' = change PDF  |  'clear' = reset history  |  'exit' = quit\n")
+
+    print(f"""
+Scope: {scope}
+Just ask anything — query and hypothesis mode are automatic.
+
+  Regular question  →  direct answer        e.g. "What is a linked list?"
+  Starts with why / how come / what causes  →  hypothesis analysis
+  solve: <question> →  force hypothesis mode on any question
+
+Commands: switch | clear | exit
+""")
 
     while True:
         try:
-            problem = input("Problem: ").strip()
+            text = input("You: ").strip()
         except (EOFError, KeyboardInterrupt):
             print("\nGoodbye.")
             break
 
-        if not problem:
+        if not text:
             continue
-        if problem.lower() in {"exit", "quit", "q"}:
+
+        if text.lower() in {"exit", "quit", "q"}:
             print("Goodbye.")
             break
-        if problem.lower() == "switch":
+
+        if text.lower() == "switch":
             pdf_filter = select_pdf(rag)
             scope = pdf_filter or "All PDFs"
             print(f"Switched to: {scope}\n")
             continue
-        if problem.lower() == "clear":
+
+        if text.lower() == "clear":
+            rag.clear_history()
             rag.clear_solve_history()
-            print("Solve history cleared.\n")
+            print("History cleared.\n")
             continue
 
-        analysis = rag.solve(problem, source_filter=pdf_filter)
+        # Strip explicit "solve:" prefix before passing the question
+        question = text[len("solve:"):].strip() if text.lower().startswith("solve:") else text
 
-        # Offer to export
-        try:
-            save = input("\nSave this analysis? (y/n): ").strip().lower()
-            if save == "y":
-                _save_analysis(analysis)
-        except (EOFError, KeyboardInterrupt):
-            pass
+        if _should_solve(text):
+            print("  [hypothesis mode — testing competing theories against your PDFs]\n")
+            analysis = rag.solve(question, source_filter=pdf_filter)
+            try:
+                save = input("\nSave this analysis? (y/n): ").strip().lower()
+                if save == "y":
+                    _save_analysis(analysis)
+                print()
+            except (EOFError, KeyboardInterrupt):
+                print()
+        else:
+            print("  [query mode]\n")
+            rag.ask(question, source_filter=pdf_filter)
 
 
 def print_usage() -> None:
@@ -159,8 +158,14 @@ def print_usage() -> None:
         "\nminrag — lightweight RAG built from scratch\n"
         "\nUsage:\n"
         "  python main.py ingest [pdf_dir]   — embed PDFs (default: ./pdfs)\n"
-        "  python main.py query              — interactive Q&A\n"
-        "  python main.py solve              — hypothesis-driven problem solver (with history + export)\n"
+        "  python main.py chat               — unified chat (auto query + hypothesis)\n"
+        "\nInside chat:\n"
+        "  Ask anything normally             → direct answer\n"
+        "  Start with 'why / how come / what causes / ...' → hypothesis mode\n"
+        "  solve: <question>                 → force hypothesis mode\n"
+        "  switch                            → change PDF scope\n"
+        "  clear                             → reset all history\n"
+        "  exit                              → quit\n"
         "\nLLM providers (selected at runtime):\n"
         "  ollama      — FREE, runs locally, no API key\n"
         "  openai      — needs OPENAI_API_KEY\n"
@@ -180,10 +185,8 @@ if __name__ == "__main__":
 
     if command == "ingest":
         cmd_ingest(args[1] if len(args) > 1 else "./pdfs")
-    elif command == "query":
-        cmd_query()
-    elif command == "solve":
-        cmd_solve()
+    elif command in {"chat", "query", "solve"}:
+        cmd_chat()
     else:
         print(f"Unknown command: {command}")
         print_usage()

@@ -8,6 +8,17 @@ from .retriever import retrieve
 N_HYPOTHESES = 4
 W = 62
 LOW_CONFIDENCE_THRESHOLD = 30.0
+_COMPLEX_KEYWORDS = {"why", "how", "cause", "reason", "explain", "analyze", "compare", "difference", "impact", "effect"}
+
+
+def _choose_n_hypotheses(problem: str) -> int:
+    words = problem.lower().split()
+    is_complex = any(w in _COMPLEX_KEYWORDS for w in words)
+    if len(words) < 8 and not is_complex:
+        return 2
+    if len(words) > 25 or is_complex:
+        return min(6, N_HYPOTHESES + 2)
+    return N_HYPOTHESES
 
 
 def _parse_json_array(text: str) -> list:
@@ -73,7 +84,8 @@ def classify_evidence(hypothesis: str, chunks: list, llm) -> list:
         while len(normalized) < len(chunks):
             normalized.append("IRRELEVANT")
         return normalized[:len(chunks)]
-    except Exception:
+    except Exception as e:
+        print(f"  Warning: evidence classification parsing failed — {e}. Treating all as IRRELEVANT.")
         return ["IRRELEVANT"] * len(chunks)
 
 
@@ -139,8 +151,9 @@ def solve(
     print("=" * W)
 
     # Step 1 — generate hypotheses (aware of history)
+    n = _choose_n_hypotheses(problem)
     print("\nStep 1/4 — Generating hypotheses...")
-    hypotheses = generate_hypotheses(problem, llm, history=history)
+    hypotheses = generate_hypotheses(problem, llm, history=history, n=n)
     for i, h in enumerate(hypotheses, 1):
         print(f"  H{i}: {h}")
 
@@ -235,7 +248,6 @@ def solve(
         {"role": "user", "content": f"Problem: {problem}"},
         {"role": "assistant", "content": f"Verdict: {verdict}"},
     ]
-    if len(updated_history) > 12:
-        updated_history = updated_history[-12:]
+    updated_history = updated_history[-12:]
 
     return full_analysis, updated_history

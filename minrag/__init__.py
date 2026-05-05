@@ -1,3 +1,5 @@
+import hashlib
+import json
 import math
 from pathlib import Path
 from dotenv import load_dotenv
@@ -10,6 +12,20 @@ from .llm import LLM, build_ask_messages
 from . import hypothesis as hyp
 
 load_dotenv()
+
+_MAX_HISTORY_CHARS = 12_000  # ~3k tokens; trim oldest messages when exceeded
+
+
+def _file_hash(path: Path) -> str:
+    return hashlib.md5(path.read_bytes()).hexdigest()
+
+
+def _trim_history(history: list) -> list:
+    total = sum(len(m["content"]) for m in history)
+    while len(history) > 2 and total > _MAX_HISTORY_CHARS:
+        removed = history.pop(0)
+        total -= len(removed["content"])
+    return history
 
 __version__ = "0.1.0"
 __all__ = ["RAG"]
@@ -62,10 +78,28 @@ class RAG:
         self.chunk_overlap = chunk_overlap
         self.rerank_model = rerank_model
         self.llm = LLM(provider=llm_provider, model=llm_model, api_key=api_key, temperature=temperature)
+        self._db_path = Path(db_path)
         self._query_history: list = []
-        self._solve_history: list = []
+        self._solve_history: list = self._load_solve_history()
 
         print(f"  minrag v{__version__} | provider: {llm_provider} | model: {self.llm.model}")
+
+    def _solve_history_path(self) -> Path:
+        return self._db_path.with_suffix(".solve_history.json")
+
+    def _load_solve_history(self) -> list:
+        p = self._solve_history_path()
+        if p.exists():
+            try:
+                return json.loads(p.read_text(encoding="utf-8"))
+            except Exception:
+                pass
+        return []
+
+    def _save_solve_history(self) -> None:
+        self._solve_history_path().write_text(
+            json.dumps(self._solve_history, indent=2), encoding="utf-8"
+        )
 
     def ingest(self, pdf_dir: str = "./pdfs", force: bool = False) -> None:
         print(f"\n=== minrag: Ingesting PDFs from '{pdf_dir}' ===")
@@ -79,8 +113,22 @@ class RAG:
             self.store.clear()
             clear_cache()
             new_paths = all_paths
+            file_hashes = {p: _file_hash(p) for p in new_paths}
         else:
-            new_paths = [p for p in all_paths if not self.store.source_exists(p.name)]
+            new_paths = []
+            file_hashes = {}
+            stored_hashes = self.store.get_source_hashes([p.name for p in all_paths])
+            for p in all_paths:
+                stored_hash = stored_hashes.get(p.name)
+                fh = _file_hash(p)
+                if stored_hash is None:
+                    new_paths.append(p)
+                    file_hashes[p] = fh
+                elif stored_hash != fh:
+                    print(f"  Detected change in {p.name} — re-ingesting.")
+                    self.store.delete_source(p.name)
+                    new_paths.append(p)
+                    file_hashes[p] = fh
             skipped = len(all_paths) - len(new_paths)
             if skipped:
                 print(f"  Skipping {skipped} already-ingested PDF(s).")
@@ -91,6 +139,11 @@ class RAG:
         names_filter = {p.name for p in new_paths}
         pages = load_pdfs(pdf_dir, names_filter=names_filter)
         chunks = chunk_pages(pages, self.chunk_size, self.chunk_overlap)
+        path_map = {p.name: p for p in new_paths}
+        for c in chunks:
+            src_path = path_map.get(c["source"])
+            if src_path:
+                c["source_hash"] = file_hashes[src_path]
         print(f"  Split into {len(chunks)} chunks")
 
         print(f"  Embedding {len(chunks)} chunks...")
@@ -104,28 +157,35 @@ class RAG:
         clear_cache()
         print(f"=== Ingestion complete: {len(chunks)} chunks stored ===\n")
 
-    def ask(self, question: str, source_filter: str = None, top_k: int = 5) -> str:
+    def _ask_core(self, question: str, source_filter: str = None, top_k: int = 5, stream: bool = False) -> dict | None:
         docs = retrieve(question, self.store, self.embedder, top_k=top_k, source_filter=source_filter, rerank_model=self.rerank_model)
         if not docs:
-            print("No relevant documents found.")
-            return ""
-
+            return None
         messages = build_ask_messages(question, docs, history=self._query_history)
-        print("\nAnswer: ", end="", flush=True)
-        answer = self.llm.chat(messages, stream=True)
-
+        if stream:
+            print("\nAnswer: ", end="", flush=True)
+        answer = self.llm.chat(messages, stream=stream)
         self._query_history.append({"role": "user", "content": question})
         self._query_history.append({"role": "assistant", "content": answer})
-        if len(self._query_history) > 12:
-            self._query_history = self._query_history[-12:]
+        self._query_history = _trim_history(self._query_history)
+        sources = sorted({f"{d['source']} p.{d['page']}" for d in docs})
+        confidence = _rerank_to_confidence([d.get("rerank_score", 0) for d in docs])
+        return {"answer": answer, "sources": sources, "confidence": confidence}
 
-        # Show sources + confidence
-        sources = list({f"{d['source']} p.{d['page']}" for d in docs})
-        rerank_scores = [d.get("rerank_score", 0) for d in docs]
-        confidence = _rerank_to_confidence(rerank_scores)
-        print(f"\nConfidence: {confidence}")
-        print(f"Sources: {', '.join(sorted(sources))}\n")
-        return answer
+    def ask(self, question: str, source_filter: str = None, top_k: int = 5) -> str:
+        result = self._ask_core(question, source_filter, top_k, stream=True)
+        if result is None:
+            print("No relevant documents found.")
+            return ""
+        print(f"\nConfidence: {result['confidence']}")
+        print(f"Sources: {', '.join(result['sources'])}\n")
+        return result["answer"]
+
+    def ask_raw(self, question: str, source_filter: str = None, top_k: int = 5) -> dict:
+        result = self._ask_core(question, source_filter, top_k, stream=False)
+        if result is None:
+            return {"answer": "", "sources": [], "confidence": "Unknown", "found": False}
+        return {**result, "found": True}
 
     def solve(self, problem: str, source_filter: str = None) -> str:
         analysis, self._solve_history = hyp.solve(
@@ -137,13 +197,21 @@ class RAG:
             history=self._solve_history,
             rerank_model=self.rerank_model,
         )
+        self._solve_history = _trim_history(self._solve_history)
+        self._save_solve_history()
         return analysis
 
     def sources(self) -> list:
         return self.store.get_sources()
+
+    def delete_source(self, name: str) -> None:
+        self.store.delete_source(name)
 
     def clear_history(self) -> None:
         self._query_history = []
 
     def clear_solve_history(self) -> None:
         self._solve_history = []
+        p = self._solve_history_path()
+        if p.exists():
+            p.unlink()

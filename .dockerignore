@@ -1,0 +1,17 @@
+.git
+__pycache__
+*.pyc
+*.pyo
+.env
+*.db
+*.db-wal
+*.db-shm
+*.log
+*.solve_history.json
+tests/
+.pytest_cache/
+node_modules/
+pdfs/
+*.html
+interview_guide.html
+rag_full_pipeline.html

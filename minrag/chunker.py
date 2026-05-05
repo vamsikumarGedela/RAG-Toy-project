@@ -1,6 +1,17 @@
+import re
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor
 import pypdf
+
+# Split on sentence endings followed by whitespace + capital/digit/quote.
+# Avoids splitting on "Fig. 1", "e.g.", "1.5", etc.
+_SENT_RE = re.compile(r'(?<=[.!?])\s+(?=[A-Z\d"\'])')
+
+MIN_CHUNK_LEN = 50
+
+
+def _split_sentences(text: str) -> list:
+    return [s.strip() for s in _SENT_RE.split(text) if s.strip()]
 
 
 def _load_one(path: Path) -> list:
@@ -18,9 +29,6 @@ def _load_one(path: Path) -> list:
     except Exception as e:
         print(f"  Warning: could not read {path.name} — {e}")
     return pages
-
-
-MIN_CHUNK_LEN = 50
 
 
 def load_pdfs(pdf_dir: str, names_filter: set = None) -> list:
@@ -46,18 +54,36 @@ def load_pdfs(pdf_dir: str, names_filter: set = None) -> list:
 def chunk_pages(pages: list, chunk_size: int = 800, overlap: int = 100) -> list:
     chunks = []
     for page in pages:
-        text = page["text"]
-        start = 0
-        while start < len(text):
-            end = start + chunk_size
-            chunk_text = text[start:end].strip()
-            if chunk_text and len(chunk_text) >= MIN_CHUNK_LEN:
-                chunks.append({
-                    "text": chunk_text,
-                    "source": page["source"],
-                    "page": page["page"],
-                })
-            if end >= len(text):
-                break
-            start = end - overlap
+        sentences = _split_sentences(page["text"])
+        current: list = []
+        current_len = 0
+
+        for sent in sentences:
+            sent_len = len(sent) + 1  # +1 for the space between sentences
+            if current and current_len + sent_len > chunk_size:
+                chunk_text = " ".join(current)
+                if len(chunk_text) >= MIN_CHUNK_LEN:
+                    chunks.append({"text": chunk_text, "source": page["source"], "page": page["page"]})
+
+                # Build overlap: keep trailing sentences that fit within `overlap` chars
+                overlap_sents: list = []
+                overlap_len = 0
+                for s in reversed(current):
+                    s_len = len(s) + 1
+                    if overlap_len + s_len <= overlap:
+                        overlap_sents.insert(0, s)
+                        overlap_len += s_len
+                    else:
+                        break
+                current = overlap_sents
+                current_len = overlap_len
+
+            current.append(sent)
+            current_len += sent_len
+
+        if current:
+            chunk_text = " ".join(current)
+            if len(chunk_text) >= MIN_CHUNK_LEN:
+                chunks.append({"text": chunk_text, "source": page["source"], "page": page["page"]})
+
     return chunks

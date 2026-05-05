@@ -1,0 +1,921 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>minrag — Chat with your PDFs</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet" />
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg:           #f5f5f7;
+      --surface:      #ffffff;
+      --navbar-bg:    rgba(255,255,255,0.72);
+      --text:         #1d1d1f;
+      --text-sec:     #6e6e73;
+      --accent:       #0071e3;
+      --accent-hover: #0077ed;
+      --accent-text:  #ffffff;
+      --border:       rgba(0,0,0,0.08);
+      --shadow-sm:    0 2px 12px rgba(0,0,0,0.06);
+      --shadow-md:    0 4px 24px rgba(0,0,0,0.10);
+      --green:        #34c759;
+      --amber:        #ff9f0a;
+      --red:          #ff3b30;
+      --radius-pill:  999px;
+      --radius-card:  18px;
+      --radius-input: 14px;
+    }
+
+    html, body {
+      height: 100%;
+      font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      font-size: 15px;
+      line-height: 1.6;
+    }
+
+    /* ── Navbar ── */
+    nav {
+      position: fixed;
+      top: 0; left: 0; right: 0;
+      height: 56px;
+      background: var(--navbar-bg);
+      backdrop-filter: blur(20px);
+      -webkit-backdrop-filter: blur(20px);
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      padding: 0 24px;
+      gap: 16px;
+      z-index: 100;
+    }
+
+    .nav-logo {
+      font-size: 17px;
+      font-weight: 700;
+      color: var(--text);
+      letter-spacing: -0.3px;
+      flex: 1;
+    }
+    .nav-logo span { color: var(--accent); }
+
+    .nav-actions { display: flex; align-items: center; gap: 10px; }
+
+    select#pdf-select {
+      height: 34px;
+      padding: 0 12px;
+      border: 1px solid var(--border);
+      border-radius: var(--radius-pill);
+      background: var(--surface);
+      font-family: inherit;
+      font-size: 13px;
+      color: var(--text);
+      outline: none;
+      cursor: pointer;
+      transition: border-color 0.2s;
+    }
+    select#pdf-select:focus { border-color: var(--accent); }
+
+    .btn {
+      height: 34px;
+      padding: 0 16px;
+      border: none;
+      border-radius: var(--radius-pill);
+      font-family: inherit;
+      font-size: 13px;
+      font-weight: 500;
+      cursor: pointer;
+      transition: all 0.2s ease;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+    .btn:active { transform: scale(0.96); }
+
+    .btn-primary { background: var(--accent); color: #fff; }
+    .btn-primary:hover { background: var(--accent-hover); }
+
+    .btn-ghost {
+      background: transparent;
+      color: var(--text-sec);
+      border: 1px solid var(--border);
+    }
+    .btn-ghost:hover { background: var(--surface); color: var(--text); }
+
+    /* ── Chat area ── */
+    #chat-area {
+      margin-top: 56px;
+      min-height: calc(100vh - 56px - 90px);
+      padding: 32px 0 24px;
+      display: flex;
+      flex-direction: column;
+      gap: 20px;
+      max-width: 760px;
+      margin-left: auto;
+      margin-right: auto;
+      padding-left: 20px;
+      padding-right: 20px;
+    }
+
+    /* welcome */
+    .welcome {
+      text-align: center;
+      padding: 60px 20px;
+      animation: fadeUp 0.5s ease both;
+    }
+    .welcome-icon {
+      width: 64px; height: 64px;
+      background: var(--accent);
+      border-radius: 18px;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 28px;
+      margin: 0 auto 20px;
+      box-shadow: 0 8px 24px rgba(0,113,227,0.25);
+    }
+    .welcome h1 {
+      font-size: 28px;
+      font-weight: 700;
+      letter-spacing: -0.5px;
+      margin-bottom: 8px;
+    }
+    .welcome p { color: var(--text-sec); font-size: 15px; }
+
+    .suggestions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      justify-content: center;
+      margin-top: 24px;
+    }
+    .suggestion-pill {
+      padding: 8px 16px;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-pill);
+      font-size: 13px;
+      color: var(--text-sec);
+      cursor: pointer;
+      transition: all 0.2s;
+    }
+    .suggestion-pill:hover {
+      border-color: var(--accent);
+      color: var(--accent);
+      background: rgba(0,113,227,0.04);
+    }
+
+    /* ── Messages ── */
+    .msg-row {
+      display: flex;
+      animation: fadeUp 0.3s ease both;
+    }
+    .msg-row.user { justify-content: flex-end; }
+    .msg-row.bot  { justify-content: flex-start; }
+
+    /* user bubble */
+    .bubble-user {
+      max-width: 72%;
+      background: var(--accent);
+      color: #fff;
+      padding: 12px 18px;
+      border-radius: 20px 20px 6px 20px;
+      font-size: 15px;
+      line-height: 1.5;
+      box-shadow: 0 2px 12px rgba(0,113,227,0.25);
+    }
+
+    /* bot card */
+    .card-bot {
+      max-width: 88%;
+      background: var(--surface);
+      border-radius: 6px 20px 20px 20px;
+      box-shadow: var(--shadow-sm);
+      border: 1px solid var(--border);
+      overflow: hidden;
+    }
+
+    .card-body { padding: 16px 18px; }
+
+    .card-header {
+      display: flex;
+      justify-content: flex-end;
+      margin-bottom: 10px;
+    }
+
+    .mode-tag {
+      font-size: 11px;
+      font-weight: 600;
+      padding: 3px 10px;
+      border-radius: var(--radius-pill);
+      letter-spacing: 0.3px;
+      text-transform: uppercase;
+    }
+    .mode-query      { background: rgba(0,113,227,0.08); color: var(--accent); }
+    .mode-hypothesis { background: rgba(52,199,89,0.10); color: #248a3d; }
+
+    .answer-text {
+      font-size: 15px;
+      line-height: 1.7;
+      color: var(--text);
+      white-space: pre-wrap;
+    }
+
+    /* hypothesis blocks */
+    .hyp-list {
+      margin-top: 14px;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+    .hyp-item {
+      background: var(--bg);
+      border-radius: 10px;
+      padding: 10px 14px;
+    }
+    .hyp-label {
+      font-size: 13px;
+      font-weight: 500;
+      color: var(--text);
+      margin-bottom: 6px;
+    }
+    .hyp-bar-wrap {
+      height: 4px;
+      background: var(--border);
+      border-radius: 99px;
+      overflow: hidden;
+    }
+    .hyp-bar {
+      height: 100%;
+      border-radius: 99px;
+      transition: width 0.8s ease;
+    }
+
+    /* card footer */
+    .card-footer {
+      padding: 10px 18px 14px;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      align-items: center;
+    }
+    .source-pill {
+      font-size: 11px;
+      padding: 3px 10px;
+      background: var(--bg);
+      border-radius: var(--radius-pill);
+      color: var(--text-sec);
+      border: 1px solid var(--border);
+    }
+    .conf-pill {
+      font-size: 11px;
+      font-weight: 600;
+      padding: 3px 10px;
+      border-radius: var(--radius-pill);
+      margin-left: auto;
+    }
+    .conf-high   { background: rgba(52,199,89,0.12);  color: #248a3d; }
+    .conf-medium { background: rgba(255,159,10,0.12); color: #b25000; }
+    .conf-low    { background: rgba(255,59,48,0.10);  color: #c00; }
+
+    /* thinking */
+    .thinking-dots {
+      display: flex; gap: 5px; padding: 14px 18px; align-items: center;
+    }
+    .thinking-dots span {
+      width: 7px; height: 7px;
+      background: var(--text-sec);
+      border-radius: 50%;
+      animation: bounce 1.2s infinite ease-in-out;
+    }
+    .thinking-dots span:nth-child(2) { animation-delay: 0.2s; }
+    .thinking-dots span:nth-child(3) { animation-delay: 0.4s; }
+
+    /* ── Bottom bar ── */
+    #bottom-bar {
+      position: fixed;
+      bottom: 0; left: 0; right: 0;
+      padding: 12px 20px 20px;
+      background: linear-gradient(to top, var(--bg) 70%, transparent);
+    }
+
+    .input-wrap {
+      max-width: 760px;
+      margin: 0 auto;
+      display: flex;
+      gap: 10px;
+      align-items: flex-end;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      padding: 10px 10px 10px 18px;
+      box-shadow: var(--shadow-md);
+      transition: border-color 0.2s;
+    }
+    .input-wrap:focus-within { border-color: var(--accent); }
+
+    #user-input {
+      flex: 1;
+      border: none;
+      outline: none;
+      font-family: inherit;
+      font-size: 15px;
+      color: var(--text);
+      background: transparent;
+      resize: none;
+      max-height: 120px;
+      line-height: 1.5;
+    }
+    #user-input::placeholder { color: #b0b0b5; }
+
+    .input-actions { display: flex; gap: 8px; align-items: center; }
+
+    #clear-btn {
+      width: 36px; height: 36px; padding: 0;
+      display: flex; align-items: center; justify-content: center;
+      border-radius: 50%;
+    }
+
+    #send-btn {
+      width: 36px; height: 36px; padding: 0;
+      display: flex; align-items: center; justify-content: center;
+      border-radius: 50%;
+      font-size: 16px;
+    }
+
+    /* ── Upload Modal ── */
+    .modal-overlay {
+      position: fixed; inset: 0;
+      background: rgba(0,0,0,0.3);
+      backdrop-filter: blur(4px);
+      display: flex; align-items: center; justify-content: center;
+      z-index: 200;
+      opacity: 0; pointer-events: none;
+      transition: opacity 0.2s;
+    }
+    .modal-overlay.open { opacity: 1; pointer-events: all; }
+
+    .modal {
+      background: var(--surface);
+      border-radius: 20px;
+      padding: 28px;
+      width: 440px;
+      max-width: 95vw;
+      box-shadow: 0 20px 60px rgba(0,0,0,0.15);
+      transform: scale(0.96) translateY(8px);
+      transition: transform 0.25s ease;
+    }
+    .modal-overlay.open .modal { transform: scale(1) translateY(0); }
+
+    .modal h2 {
+      font-size: 19px; font-weight: 700;
+      letter-spacing: -0.3px;
+      margin-bottom: 4px;
+    }
+    .modal-sub { font-size: 13px; color: var(--text-sec); margin-bottom: 20px; }
+
+    .drop-zone {
+      border: 1.5px dashed var(--border);
+      border-radius: var(--radius-card);
+      padding: 36px 20px;
+      text-align: center;
+      cursor: pointer;
+      transition: all 0.2s;
+      background: var(--bg);
+    }
+    .drop-zone:hover, .drop-zone.drag-over {
+      border-color: var(--accent);
+      background: rgba(0,113,227,0.04);
+    }
+    .drop-icon { font-size: 32px; margin-bottom: 10px; }
+    .drop-text { font-size: 14px; color: var(--text-sec); }
+    .drop-text strong { color: var(--accent); }
+
+    #file-input { display: none; }
+
+    .file-list {
+      margin-top: 16px;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      max-height: 160px;
+      overflow-y: auto;
+    }
+    .file-item {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 10px 14px;
+      background: var(--bg);
+      border-radius: 10px;
+      font-size: 13px;
+    }
+    .file-item-name { flex: 1; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .file-item-size { color: var(--text-sec); font-size: 12px; }
+    .ingested-item {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 8px 10px;
+      border-radius: 8px;
+      background: var(--bg);
+      margin-bottom: 6px;
+      font-size: 13px;
+    }
+    .ingested-item-name { flex: 1; color: var(--text); font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .ingested-delete {
+      background: none;
+      border: none;
+      color: var(--text-sec);
+      cursor: pointer;
+      font-size: 16px;
+      padding: 2px 6px;
+      border-radius: 4px;
+      line-height: 1;
+      flex-shrink: 0;
+    }
+    .ingested-delete:hover { background: rgba(255,59,48,0.1); color: var(--red); }
+    .file-remove {
+      background: none; border: none; color: var(--text-sec);
+      cursor: pointer; font-size: 16px; line-height: 1;
+      transition: color 0.2s; padding: 0;
+    }
+    .file-remove:hover { color: var(--red); }
+
+    .modal-footer {
+      display: flex;
+      justify-content: flex-end;
+      gap: 10px;
+      margin-top: 20px;
+    }
+
+    /* toast */
+    #toast {
+      position: fixed;
+      bottom: 100px; left: 50%; transform: translateX(-50%) translateY(20px);
+      background: var(--text);
+      color: #fff;
+      padding: 10px 20px;
+      border-radius: var(--radius-pill);
+      font-size: 13px;
+      font-weight: 500;
+      opacity: 0;
+      transition: all 0.3s ease;
+      z-index: 300;
+      pointer-events: none;
+      white-space: nowrap;
+    }
+    #toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+
+    /* ── Animations ── */
+    @keyframes fadeUp {
+      from { opacity: 0; transform: translateY(12px); }
+      to   { opacity: 1; transform: translateY(0); }
+    }
+    @keyframes bounce {
+      0%,80%,100% { transform: scale(0); }
+      40%         { transform: scale(1); }
+    }
+
+    /* scrollbar */
+    ::-webkit-scrollbar { width: 6px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 99px; }
+  </style>
+</head>
+<body>
+
+<!-- ── Navbar ── -->
+<nav>
+  <div class="nav-logo">min<span>rag</span></div>
+  <div class="nav-actions">
+    <select id="pdf-select">
+      <option value="">All PDFs</option>
+    </select>
+    <button class="btn btn-ghost" onclick="openUpload()">
+      ↑ Upload PDF
+    </button>
+    <button class="btn btn-ghost" id="clear-hist-btn" onclick="clearHistory()">
+      Clear
+    </button>
+  </div>
+</nav>
+
+<!-- ── Chat ── -->
+<div id="chat-area">
+  <div class="welcome" id="welcome">
+    <h1>Chat with your PDFs</h1>
+    <p>Ask anything — minrag finds the answer from your documents.</p>
+  </div>
+</div>
+
+<!-- ── Input bar ── -->
+<div id="bottom-bar">
+  <div class="input-wrap">
+    <textarea
+      id="user-input"
+      rows="1"
+      placeholder="Ask anything about your documents..."
+    ></textarea>
+    <div class="input-actions">
+      <button class="btn btn-ghost" id="clear-btn" title="Clear history" onclick="clearHistory()">↺</button>
+      <button class="btn btn-primary" id="send-btn" onclick="sendMessage()">↑</button>
+    </div>
+  </div>
+</div>
+
+<!-- ── Upload Modal ── -->
+<div class="modal-overlay" id="upload-modal">
+  <div class="modal">
+    <h2>Upload PDFs</h2>
+    <p class="modal-sub">Drop your PDF files to make them searchable.</p>
+
+    <div class="drop-zone" id="drop-zone" onclick="document.getElementById('file-input').click()">
+      <div class="drop-icon">📄</div>
+      <div class="drop-text"><strong>Click to browse</strong> or drag and drop</div>
+      <div class="drop-text" style="margin-top:4px;font-size:12px;">PDF files only</div>
+    </div>
+    <input type="file" id="file-input" accept=".pdf" multiple />
+
+    <div class="file-list" id="file-list"></div>
+
+    <div class="modal-footer">
+      <button class="btn btn-ghost" onclick="closeUpload()">Cancel</button>
+      <button class="btn btn-primary" id="upload-btn" onclick="uploadFiles()">Upload & Ingest</button>
+    </div>
+
+    <div id="ingested-section" style="margin-top:20px;border-top:1px solid var(--border);padding-top:16px;display:none">
+      <div style="font-size:12px;font-weight:600;color:var(--text-sec);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:10px;">Ingested PDFs</div>
+      <div id="ingested-list"></div>
+    </div>
+  </div>
+</div>
+
+<!-- Toast -->
+<div id="toast"></div>
+
+<script>
+  const API = 'http://127.0.0.1:8000';
+  let selectedFiles = [];
+
+  // ── Auto-resize textarea ──
+  const input = document.getElementById('user-input');
+  input.addEventListener('input', () => {
+    input.style.height = 'auto';
+    input.style.height = Math.min(input.scrollHeight, 120) + 'px';
+  });
+  input.addEventListener('keydown', e => {
+    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(); }
+  });
+
+  // ── Load PDF sources on startup ──
+  async function loadSources() {
+    try {
+      const res = await fetch(`${API}/sources`);
+      const data = await res.json();
+      const sel = document.getElementById('pdf-select');
+      sel.innerHTML = '<option value="">All PDFs</option>';
+      data.sources.forEach(s => {
+        const opt = document.createElement('option');
+        opt.value = s; opt.textContent = s;
+        sel.appendChild(opt);
+      });
+    } catch { /* server not ready */ }
+  }
+  loadSources();
+
+  // ── Suggestion pills ──
+  function useSuggestion(el) {
+    input.value = el.textContent;
+    input.style.height = 'auto';
+    sendMessage();
+  }
+
+  // ── Send message ──
+  async function sendMessage() {
+    const text = input.value.trim();
+    if (!text) return;
+    input.value = '';
+    input.style.height = 'auto';
+
+    hideWelcome();
+    appendUser(text);
+    const thinkCard = appendThinking();
+
+    const source = document.getElementById('pdf-select').value || null;
+    const isHypothesis = detectHypothesis(text);
+    const endpoint = isHypothesis ? '/solve' : '/chat';
+    const body = isHypothesis
+      ? { problem: text, source }
+      : { question: text, source, top_k: 5 };
+
+    try {
+      const res = await fetch(`${API}${endpoint}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+
+      thinkCard.remove();
+
+      if (!res.ok) {
+        const err = await res.json();
+        appendError(err.detail || 'Something went wrong.');
+        return;
+      }
+
+      const data = await res.json();
+
+      if (isHypothesis) {
+        appendHypothesis(data.analysis);
+      } else {
+        appendAnswer(data.answer, data.sources, data.confidence);
+      }
+    } catch (e) {
+      thinkCard.remove();
+      appendError('Could not reach the API. Make sure the server is running.');
+    }
+
+    scrollBottom();
+  }
+
+  // ── Detect hypothesis mode ──
+  function detectHypothesis(text) {
+    const t = text.toLowerCase().trim();
+    if (t.startsWith('solve:')) return true;
+    const first = t.split(' ')[0];
+    if (first === 'why') return true;
+    const twoWord = t.split(' ').slice(0, 2).join(' ');
+    return ['how come','what causes','what caused','explain why','how could','what makes'].includes(twoWord);
+  }
+
+  // ── DOM helpers ──
+  function hideWelcome() {
+    const w = document.getElementById('welcome');
+    if (w) w.remove();
+  }
+
+  function appendUser(text) {
+    const row = document.createElement('div');
+    row.className = 'msg-row user';
+    row.innerHTML = `<div class="bubble-user">${escHtml(text)}</div>`;
+    chatArea().appendChild(row);
+    scrollBottom();
+  }
+
+  function appendThinking() {
+    const row = document.createElement('div');
+    row.className = 'msg-row bot';
+    row.innerHTML = `
+      <div class="card-bot">
+        <div class="thinking-dots">
+          <span></span><span></span><span></span>
+        </div>
+      </div>`;
+    chatArea().appendChild(row);
+    scrollBottom();
+    return row;
+  }
+
+  function appendAnswer(answer, sources, confidence) {
+    const confClass = confidence.includes('High') ? 'conf-high'
+                    : confidence.includes('Medium') ? 'conf-medium' : 'conf-low';
+
+    const sourcePills = (sources || []).map(s =>
+      `<span class="source-pill">📄 ${escHtml(s)}</span>`
+    ).join('');
+
+    const row = document.createElement('div');
+    row.className = 'msg-row bot';
+    row.innerHTML = `
+      <div class="card-bot">
+        <div class="card-body">
+          <div class="card-header">
+            <span class="mode-tag mode-query">Query</span>
+          </div>
+          <div class="answer-text">${escHtml(answer)}</div>
+        </div>
+        <div class="card-footer">
+          ${sourcePills}
+          <span class="conf-pill ${confClass}">◉ ${escHtml(confidence)}</span>
+        </div>
+      </div>`;
+    chatArea().appendChild(row);
+  }
+
+  function appendHypothesis(analysis) {
+    const lines = analysis.split('\n');
+    const hypLines = [];
+    const verdictLines = [];
+    let inVerdict = false;
+
+    lines.forEach(l => {
+      if (l.includes('VERDICT')) { inVerdict = true; return; }
+      if (inVerdict) verdictLines.push(l);
+      else if (l.match(/^[✅⚠❌]/)) hypLines.push(l);
+    });
+
+    const hypHTML = hypLines.map(l => {
+      const pctMatch = l.match(/(\d+(\.\d+)?)%/);
+      const pct = pctMatch ? parseFloat(pctMatch[1]) : 0;
+      const label = l.replace(/^[✅⚠❌]\s*/, '').replace(/\d+(\.\d+)?%\s*\[.*?\]\s*/, '').trim();
+      const color = pct >= 70 ? 'var(--green)' : pct >= 35 ? 'var(--amber)' : 'var(--red)';
+      const barWidth = pct > 0 ? pct : 2;
+      const icon = pct >= 70 ? '✅' : pct >= 35 ? '⚠️' : '❌';
+      return `
+        <div class="hyp-item">
+          <div class="hyp-label">${icon} ${escHtml(label)}</div>
+          <div style="display:flex;align-items:center;gap:8px;margin-top:6px">
+            <div class="hyp-bar-wrap" style="flex:1">
+              <div class="hyp-bar" style="width:${barWidth}%;background:${pct>0?color:'var(--border)'}"></div>
+            </div>
+            <span style="font-size:12px;font-weight:600;color:${pct>0?color:'var(--text-sec)'};min-width:36px;text-align:right">${pct}%</span>
+          </div>
+        </div>`;
+    }).join('');
+
+    const verdict = verdictLines.join('\n').trim();
+
+    const row = document.createElement('div');
+    row.className = 'msg-row bot';
+    row.innerHTML = `
+      <div class="card-bot">
+        <div class="card-body">
+          <div class="card-header">
+            <span class="mode-tag mode-hypothesis">Hypothesis</span>
+          </div>
+          <div class="hyp-list">${hypHTML}</div>
+          ${verdict ? `
+          <div style="margin-top:14px;padding-top:14px;border-top:1px solid var(--border)">
+            <div style="font-size:12px;font-weight:600;color:var(--text-sec);margin-bottom:6px;text-transform:uppercase;letter-spacing:0.5px;">Verdict</div>
+            <div class="answer-text">${escHtml(verdict)}</div>
+          </div>` : ''}
+        </div>
+      </div>`;
+    chatArea().appendChild(row);
+  }
+
+  function appendError(msg) {
+    const row = document.createElement('div');
+    row.className = 'msg-row bot';
+    row.innerHTML = `
+      <div class="card-bot" style="border-color:rgba(255,59,48,0.2)">
+        <div class="card-body">
+          <div style="color:var(--red);font-size:14px;">⚠ ${escHtml(msg)}</div>
+        </div>
+      </div>`;
+    chatArea().appendChild(row);
+  }
+
+  // ── Clear history ──
+  async function clearHistory() {
+    try {
+      await fetch(`${API}/history`, { method: 'DELETE' });
+    } catch {}
+    chatArea().innerHTML = '';
+    showToast('History cleared');
+    // restore welcome
+    const welcome = document.createElement('div');
+    welcome.className = 'welcome';
+    welcome.id = 'welcome';
+    welcome.innerHTML = `
+      <h1>Chat with your PDFs</h1>
+      <p>Ask anything — minrag finds the answer from your documents.</p>`;
+    chatArea().appendChild(welcome);
+  }
+
+  // ── Upload modal ──
+  function openUpload() {
+    document.getElementById('upload-modal').classList.add('open');
+    selectedFiles = [];
+    renderFileList();
+    loadIngestedInModal();
+  }
+  function closeUpload() {
+    document.getElementById('upload-modal').classList.remove('open');
+    selectedFiles = [];
+    renderFileList();
+  }
+
+  async function loadIngestedInModal() {
+    try {
+      const res = await fetch(`${API}/sources`);
+      const data = await res.json();
+      const section = document.getElementById('ingested-section');
+      const list = document.getElementById('ingested-list');
+      if (!data.sources.length) { section.style.display = 'none'; return; }
+      section.style.display = 'block';
+      list.innerHTML = data.sources.map(s => `
+        <div class="ingested-item" id="ingested-${CSS.escape(s)}">
+          <span style="font-size:16px;">📄</span>
+          <span class="ingested-item-name" title="${escHtml(s)}">${escHtml(s)}</span>
+          <button class="ingested-delete" onclick="deletePdf('${escHtml(s)}')" title="Delete">×</button>
+        </div>`).join('');
+    } catch { /* server not ready */ }
+  }
+
+  async function deletePdf(name) {
+    if (!confirm(`Delete "${name}" from the system?`)) return;
+    try {
+      const res = await fetch(`${API}/sources/${encodeURIComponent(name)}`, { method: 'DELETE' });
+      if (res.ok) {
+        showToast(`✓ Deleted ${name}`);
+        await loadSources();
+        await loadIngestedInModal();
+      } else {
+        showToast('Delete failed');
+      }
+    } catch {
+      showToast('Delete failed — is the server running?');
+    }
+  }
+
+  document.getElementById('file-input').addEventListener('change', e => {
+    addFiles(Array.from(e.target.files));
+  });
+
+  const dropZone = document.getElementById('drop-zone');
+  dropZone.addEventListener('dragover', e => { e.preventDefault(); dropZone.classList.add('drag-over'); });
+  dropZone.addEventListener('dragleave', () => dropZone.classList.remove('drag-over'));
+  dropZone.addEventListener('drop', e => {
+    e.preventDefault();
+    dropZone.classList.remove('drag-over');
+    addFiles(Array.from(e.dataTransfer.files).filter(f => f.name.endsWith('.pdf')));
+  });
+
+  function addFiles(files) {
+    files.forEach(f => {
+      if (!selectedFiles.find(x => x.name === f.name)) selectedFiles.push(f);
+    });
+    renderFileList();
+  }
+
+  function renderFileList() {
+    const list = document.getElementById('file-list');
+    list.innerHTML = selectedFiles.map((f, i) => `
+      <div class="file-item">
+        <span style="font-size:18px;">📄</span>
+        <span class="file-item-name">${escHtml(f.name)}</span>
+        <span class="file-item-size">${(f.size/1024).toFixed(0)} KB</span>
+        <button class="file-remove" onclick="removeFile(${i})">×</button>
+      </div>`).join('');
+  }
+
+  function removeFile(i) {
+    selectedFiles.splice(i, 1);
+    renderFileList();
+  }
+
+  async function uploadFiles() {
+    if (!selectedFiles.length) { showToast('No files selected'); return; }
+    const btn = document.getElementById('upload-btn');
+    btn.textContent = 'Uploading...';
+    btn.disabled = true;
+
+    const form = new FormData();
+    selectedFiles.forEach(f => form.append('files', f));
+
+    try {
+      const res = await fetch(`${API}/ingest`, { method: 'POST', body: form });
+      const data = await res.json();
+      closeUpload();
+      await loadSources();
+      showToast(`✓ Ingested ${data.ingested.length} PDF(s)`);
+    } catch {
+      showToast('Upload failed — is the server running?');
+    } finally {
+      btn.textContent = 'Upload & Ingest';
+      btn.disabled = false;
+    }
+  }
+
+  // ── Close modal on overlay click ──
+  document.getElementById('upload-modal').addEventListener('click', function(e) {
+    if (e.target === this) closeUpload();
+  });
+
+  // ── Toast ──
+  function showToast(msg) {
+    const t = document.getElementById('toast');
+    t.textContent = msg;
+    t.classList.add('show');
+    setTimeout(() => t.classList.remove('show'), 2800);
+  }
+
+  // ── Utils ──
+  function chatArea() { return document.getElementById('chat-area'); }
+  function scrollBottom() {
+    setTimeout(() => window.scrollTo({ top: document.body.scrollHeight, behavior: 'smooth' }), 50);
+  }
+  function escHtml(s) {
+    return String(s)
+      .replace(/&/g,'&amp;')
+      .replace(/</g,'&lt;')
+      .replace(/>/g,'&gt;')
+      .replace(/"/g,'&quot;');
+  }
+</script>
+</body>
+</html>
