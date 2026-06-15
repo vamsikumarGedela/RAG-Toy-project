@@ -60,6 +60,18 @@ minrag:
   access patterns and O(n log n) average complexity...
 ```
 
+**Streaming Responses**  
+Answers stream token-by-token via Server-Sent Events. No waiting for the full response — words appear as the model generates them, just like ChatGPT.
+
+**Conversation History — persisted across restarts**  
+Chat history is saved to SQLite after every message. Restart the server and your conversation continues exactly where you left off. Nothing is lost.
+
+**Fast Startup with Loading Screen**  
+The server binds and the browser opens instantly. The embedder and reranker load in parallel background threads. The browser shows a smooth loading overlay until everything is warm — no blank pages, no failed requests on startup.
+
+**LLM Timeout Protection**  
+Configurable timeout (default 30s) via `LLM_TIMEOUT` in `.env`. If the LLM provider is slow or down, you get a clear error instead of a request hanging forever.
+
 **Smart Ingestion — no duplicate processing**  
 Every PDF is fingerprinted with MD5. Re-run ingest as many times as you want — unchanged files are skipped. Only new or modified PDFs are processed. Your time matters.
 
@@ -80,9 +92,9 @@ Every module is small, readable, and purposeful:
 minrag/
 ├── chunker.py      — smart PDF text extraction with sentence-aware splitting
 ├── embedder.py     — lazy-loaded sentence transformers, L2-normalized
-├── store.py        — WAL-mode SQLite with 64MB cache, indexed by source
+├── store.py        — WAL-mode SQLite with 64MB cache, history persistence
 ├── retriever.py    — hybrid BM25 + vector fusion with LRU-cached indexes
-├── llm.py          — streaming, rate-limit retries, 4 providers
+├── llm.py          — streaming, timeout support, 4 providers
 └── hypothesis.py   — parallel evidence retrieval + confidence scoring
 ```
 
@@ -97,22 +109,24 @@ No file is over 300 lines. Every function does one thing. Read it in an afternoo
 pip install -r requirements.txt
 
 # 2. Configure your LLM (.env file)
-LLM_PROVIDER=ollama   # free & local — or openai / openrouter / anthropic
-LLM_API_KEY=          # not needed for ollama
+LLM_PROVIDER=openrouter   # ollama / openai / openrouter / anthropic
+LLM_API_KEY=your_key_here
+LLM_MODEL=your_model_here
+LLM_TIMEOUT=30            # seconds before a request times out
 
 # 3. Run
-cd ScratchRAG
 python run.py
-# → opens http://127.0.0.1:8000
+# → opens http://127.0.0.1:8000 instantly, loading screen while models warm up
 ```
 
 ---
 
 ## Web UI
 
-Upload PDFs → ask questions → get answers with source citations and confidence scores.  
+Upload PDFs → ask questions → get streaming answers with source citations and confidence scores.  
 Delete individual PDFs without touching the others.  
-Switch between PDFs mid-conversation from the navbar.
+Switch between PDFs mid-conversation from the navbar.  
+Chat history survives server restarts.
 
 ---
 
@@ -134,11 +148,14 @@ Full REST API with Swagger docs at `/docs`.
 | Method | Endpoint | Description |
 |--------|----------|-------------|
 | `POST` | `/ingest` | Upload & ingest PDFs |
+| `GET` | `/ingest/status` | Check background ingest progress |
 | `GET` | `/sources` | List all documents |
 | `DELETE` | `/sources/{name}` | Remove a document |
-| `POST` | `/chat` | Ask a question |
+| `POST` | `/chat` | Ask a question (full response) |
+| `POST` | `/chat/stream` | Ask a question (streaming via SSE) |
 | `POST` | `/solve` | Hypothesis analysis |
 | `DELETE` | `/history` | Clear chat history |
+| `GET` | `/health` | Server + model readiness check |
 
 ---
 
@@ -147,9 +164,10 @@ Full REST API with Swagger docs at `/docs`.
 | Layer | Technology |
 |-------|-----------|
 | Embeddings | `sentence-transformers` (all-MiniLM-L6-v2) |
-| Reranking | `cross-encoder/ms-marco-MiniLM-L-6-v2` |
+| Reranking | `cross-encoder/ms-marco-TinyBERT-L-2-v2` |
 | Keyword search | `rank-bm25` |
 | Vector store | SQLite (WAL mode) |
+| History store | SQLite (same DB, history table) |
 | PDF parsing | `pypdf` |
 | Web framework | FastAPI + uvicorn |
 | LLM interface | OpenAI SDK + native Anthropic |
