@@ -1,5 +1,8 @@
+import logging
 import os
 import time
+
+logger = logging.getLogger(__name__)
 
 # Provider configs — all OpenAI-compatible except Anthropic
 _PROVIDERS = {
@@ -43,7 +46,7 @@ class LLM:
       - "anthropic"   → needs ANTHROPIC_API_KEY + pip install anthropic
     """
 
-    def __init__(self, provider: str = "ollama", model: str = None, api_key: str = None, temperature: float = 0.0):
+    def __init__(self, provider: str = "ollama", model: str = None, api_key: str = None, temperature: float = 0.0, timeout: float = 30.0):
         if provider not in _PROVIDERS:
             raise ValueError(f"Unknown provider '{provider}'. Choose from: {list(_PROVIDERS)}")
 
@@ -65,10 +68,11 @@ class LLM:
 
         self.base_url = cfg.get("base_url")
         self.temperature = temperature
+        self.timeout = timeout
 
     def _openai_client(self):
         from openai import OpenAI
-        kwargs = {"api_key": self.api_key}
+        kwargs = {"api_key": self.api_key, "timeout": self.timeout}
         if self.base_url:
             kwargs["base_url"] = self.base_url
         return OpenAI(**kwargs)
@@ -81,12 +85,61 @@ class LLM:
                 "Anthropic provider requires the anthropic package.\n"
                 "Install it: pip install anthropic"
             )
-        return anthropic.Anthropic(api_key=self.api_key)
+        return anthropic.Anthropic(api_key=self.api_key, timeout=self.timeout)
 
     def chat(self, messages: list, stream: bool = False) -> str:
         if self.provider == "anthropic":
             return self._chat_anthropic(messages, stream)
         return self._chat_openai(messages, stream)
+
+    def stream(self, messages: list):
+        """Yield tokens one at a time — no printing, caller decides what to do."""
+        if self.provider == "anthropic":
+            yield from self._stream_anthropic(messages)
+        else:
+            yield from self._stream_openai(messages)
+
+    def _stream_openai(self, messages: list):
+        client = self._openai_client()
+        for attempt in range(3):
+            try:
+                response = client.chat.completions.create(
+                    model=self.model,
+                    messages=messages,
+                    temperature=self.temperature,
+                    stream=True,
+                )
+                for chunk in response:
+                    token = chunk.choices[0].delta.content or ""
+                    if token:
+                        yield token
+                return
+            except Exception as e:
+                if "429" in str(e) and attempt < 2:
+                    wait = 10 * (attempt + 1)
+                    logger.warning("Rate limited. Retrying in %ds...", wait)
+                    time.sleep(wait)
+                else:
+                    raise
+
+    def _stream_anthropic(self, messages: list):
+        client = self._anthropic_client()
+        system = ""
+        filtered = []
+        for m in messages:
+            if m["role"] == "system":
+                system = m["content"]
+            else:
+                filtered.append(m)
+        with client.messages.stream(
+            model=self.model,
+            max_tokens=2048,
+            temperature=self.temperature,
+            system=system,
+            messages=filtered,
+        ) as s:
+            for token in s.text_stream:
+                yield token
 
     def _chat_openai(self, messages: list, stream: bool) -> str:
         client = self._openai_client()
@@ -117,7 +170,7 @@ class LLM:
             except Exception as e:
                 if "429" in str(e) and attempt < 2:
                     wait = 10 * (attempt + 1)
-                    print(f"\nRate limited. Retrying in {wait}s...")
+                    logger.warning("Rate limited. Retrying in %ds...", wait)
                     time.sleep(wait)
                 else:
                     raise

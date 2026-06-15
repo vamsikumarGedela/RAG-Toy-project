@@ -1,5 +1,4 @@
 import numpy as np
-from sentence_transformers import SentenceTransformer
 
 
 class Embedder:
@@ -8,8 +7,9 @@ class Embedder:
         self._model = None
 
     @property
-    def model(self) -> SentenceTransformer:
+    def model(self):
         if self._model is None:
+            from sentence_transformers import SentenceTransformer
             self._model = SentenceTransformer(self.model_name)
         return self._model
 
@@ -24,3 +24,6 @@ class Embedder:
 
     def encode_one(self, text: str) -> np.ndarray:
         return self.encode([text])[0]
+
+    def warmup(self) -> None:
+        _ = self.model  # triggers lazy load so first query isn't slow

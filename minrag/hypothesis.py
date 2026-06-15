@@ -1,9 +1,12 @@
 import json
+import logging
 import re
 import time
 from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor
 from .retriever import retrieve
+
+logger = logging.getLogger(__name__)
 
 N_HYPOTHESES = 4
 W = 62
@@ -85,7 +88,7 @@ def classify_evidence(hypothesis: str, chunks: list, llm) -> list:
             normalized.append("IRRELEVANT")
         return normalized[:len(chunks)]
     except Exception as e:
-        print(f"  Warning: evidence classification parsing failed — {e}. Treating all as IRRELEVANT.")
+        logger.warning("Evidence classification parsing failed — %s. Treating all as IRRELEVANT.", e)
         return ["IRRELEVANT"] * len(chunks)
 
 

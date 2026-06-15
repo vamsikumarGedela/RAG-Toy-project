@@ -1,26 +1,38 @@
+import logging
 from collections import OrderedDict
 import numpy as np
 from rank_bm25 import BM25Okapi
-from sentence_transformers import CrossEncoder
+
+logger = logging.getLogger(__name__)
 
 _cross_encoder = None
 _cross_encoder_model_name: str = None
-_bm25_cache: OrderedDict = OrderedDict()  # LRU cache: source_filter → (chunks, BM25Okapi)
+_bm25_cache: OrderedDict = OrderedDict()   # LRU: source_filter → (chunks, BM25Okapi)
+_query_cache: OrderedDict = OrderedDict()  # LRU: (query, source_filter, top_k) → ranked docs
 _BM25_CACHE_MAX = 10
-DEFAULT_RERANK_MODEL = "cross-encoder/ms-marco-MiniLM-L-6-v2"
+_QUERY_CACHE_MAX = 128
+DEFAULT_RERANK_MODEL = "cross-encoder/ms-marco-TinyBERT-L-2-v2"
 
 
-def _get_cross_encoder(model_name: str = DEFAULT_RERANK_MODEL) -> CrossEncoder:
+def _get_cross_encoder(model_name: str = DEFAULT_RERANK_MODEL):
     global _cross_encoder, _cross_encoder_model_name
     if _cross_encoder is None or _cross_encoder_model_name != model_name:
+        from sentence_transformers import CrossEncoder
         _cross_encoder = CrossEncoder(model_name)
         _cross_encoder_model_name = model_name
     return _cross_encoder
 
 
+def warmup_reranker(model_name: str = DEFAULT_RERANK_MODEL) -> None:
+    _get_cross_encoder(model_name)
+    logger.info("Cross-encoder warmed up: %s", model_name)
+
+
 def clear_cache() -> None:
-    global _bm25_cache
+    global _bm25_cache, _query_cache
     _bm25_cache.clear()
+    _query_cache.clear()
+    logger.info("Retrieval caches cleared.")
 
 
 def vector_search(query_embedding: np.ndarray, store, top_k: int = 10, source_filter: str = None) -> list:
@@ -90,14 +102,36 @@ def rerank(query: str, docs: list, top_n: int = 5, model: str = DEFAULT_RERANK_M
 
 
 def retrieve(query: str, store, embedder, top_k: int = 5, source_filter: str = None, rerank_model: str = DEFAULT_RERANK_MODEL) -> list:
+    global _query_cache
+
+    cache_key = (query, source_filter, top_k, rerank_model)
+    if cache_key in _query_cache:
+        _query_cache.move_to_end(cache_key)
+        logger.debug("Query cache hit: %s", query[:60])
+        return _query_cache[cache_key]
+
     query_emb = embedder.encode_one(query)
 
-    vector_results = vector_search(query_emb, store, top_k=top_k * 2, source_filter=source_filter)
+    # Single store read — cache hit after first query
+    all_chunks, all_embeddings = store.get_all(source_filter)
+    if not all_chunks:
+        return []
 
-    cache_key = source_filter or "all"
-    all_chunks = store.get_all_text(source_filter)
-    bm25_results = bm25_search(query, all_chunks, top_k=top_k * 2, cache_key=cache_key)
+    # Vector search using already-loaded embeddings (no second DB read)
+    scores = np.dot(all_embeddings, query_emb.astype(np.float32))
+    top_indices = np.argsort(scores)[::-1][:top_k * 2]
+    vector_results = [{**all_chunks[i], "score": float(scores[i])} for i in top_indices]
+
+    bm25_key = source_filter or "all"
+    bm25_results = bm25_search(query, all_chunks, top_k=top_k * 2, cache_key=bm25_key)
 
     fused = reciprocal_rank_fusion([vector_results, bm25_results])
-    deduped = _deduplicate(fused)[:top_k * 4]        # cap candidates before expensive rerank
-    return rerank(query, deduped, top_n=top_k, model=rerank_model)
+    deduped = _deduplicate(fused)[:top_k * 2]
+    result = rerank(query, deduped, top_n=top_k, model=rerank_model)
+
+    if len(_query_cache) >= _QUERY_CACHE_MAX:
+        _query_cache.popitem(last=False)
+    _query_cache[cache_key] = result
+    logger.debug("Query cached: %s", query[:60])
+
+    return result

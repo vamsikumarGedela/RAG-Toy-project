@@ -1,7 +1,10 @@
+import logging
 import re
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor
 import pypdf
+
+logger = logging.getLogger(__name__)
 
 # Split on sentence endings followed by whitespace + capital/digit/quote.
 # Avoids splitting on "Fig. 1", "e.g.", "1.5", etc.
@@ -27,7 +30,7 @@ def _load_one(path: Path) -> list:
                     "page": i + 1,
                 })
     except Exception as e:
-        print(f"  Warning: could not read {path.name} — {e}")
+        logger.warning("Could not read %s — %s", path.name, e)
     return pages
 
 
@@ -47,7 +50,7 @@ def load_pdfs(pdf_dir: str, names_filter: set = None) -> list:
     pages = []
     for path, result in zip(paths, results):
         pages.extend(result)
-        print(f"  Loaded: {path.name} ({len(result)} pages)")
+        logger.info("Loaded %s (%d pages)", path.name, len(result))
     return pages
 
 

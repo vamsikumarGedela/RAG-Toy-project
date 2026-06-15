@@ -1,12 +1,19 @@
 import threading
 import time
 import webbrowser
+import urllib.request
 import uvicorn
 
 
 def _open_browser():
-    time.sleep(2)
-    webbrowser.open("http://127.0.0.1:8000")
+    # Open browser as soon as uvicorn is up — loading screen handles the rest
+    for _ in range(30):
+        try:
+            urllib.request.urlopen("http://127.0.0.1:8000/api", timeout=1)
+            webbrowser.open("http://127.0.0.1:8000")
+            return
+        except Exception:
+            time.sleep(1)
 
 
 if __name__ == "__main__":

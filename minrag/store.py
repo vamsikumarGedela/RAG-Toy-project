@@ -1,11 +1,18 @@
+import logging
 import sqlite3
 import numpy as np
 from pathlib import Path
 
+from .interfaces import VectorStoreProtocol
+
+logger = logging.getLogger(__name__)
+
 
 class VectorStore:
+    """SQLite-backed vector store. Implements VectorStoreProtocol."""
     def __init__(self, db_path: str = "./minrag.db"):
         self.db_path = db_path
+        self._cache: tuple | None = None  # (chunks, embeddings) for full-table queries
         self._init_db()
 
     def _connect(self) -> sqlite3.Connection:
@@ -26,6 +33,13 @@ class VectorStore:
                     source_hash TEXT
                 )
             """)
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS history (
+                    id      INTEGER PRIMARY KEY AUTOINCREMENT,
+                    role    TEXT NOT NULL,
+                    content TEXT NOT NULL
+                )
+            """)
             conn.execute("CREATE INDEX IF NOT EXISTS idx_source ON chunks(source)")
             # Migrate existing DBs that don't have source_hash yet
             try:
@@ -42,21 +56,20 @@ class VectorStore:
                     for c, e in zip(chunks, embeddings)
                 ],
             )
+        self._cache = None
 
     def get_all_text(self, source_filter: str = None) -> list:
-        with self._connect() as conn:
-            if source_filter:
-                rows = conn.execute(
-                    "SELECT text, source, page FROM chunks WHERE source = ?",
-                    (source_filter,),
-                ).fetchall()
-            else:
-                rows = conn.execute(
-                    "SELECT text, source, page FROM chunks"
-                ).fetchall()
-        return [{"text": r[0], "source": r[1], "page": r[2]} for r in rows]
+        # Reuse the in-memory cache when no filter is applied
+        if source_filter is None and self._cache is not None:
+            return self._cache[0]
+        chunks, _ = self.get_all(source_filter)
+        return chunks
 
     def get_all(self, source_filter: str = None) -> tuple:
+        # Return cached result for full-table queries
+        if source_filter is None and self._cache is not None:
+            return self._cache
+
         with self._connect() as conn:
             if source_filter:
                 rows = conn.execute(
@@ -75,7 +88,10 @@ class VectorStore:
         embeddings = np.stack([
             np.frombuffer(r[3], dtype=np.float32) for r in rows
         ])
-        return chunks, embeddings
+        result = (chunks, embeddings)
+        if source_filter is None:
+            self._cache = result
+        return result
 
     def search(self, query_embedding: np.ndarray, top_k: int = 10, source_filter: str = None) -> list:
         chunks, embeddings = self.get_all(source_filter)
@@ -113,6 +129,7 @@ class VectorStore:
     def delete_source(self, source: str) -> None:
         with self._connect() as conn:
             conn.execute("DELETE FROM chunks WHERE source = ?", (source,))
+        self._cache = None
 
     def get_sources(self) -> list:
         with self._connect() as conn:
@@ -124,3 +141,27 @@ class VectorStore:
     def clear(self) -> None:
         with self._connect() as conn:
             conn.execute("DELETE FROM chunks")
+        self._cache = None
+
+    # ------------------------------------------------------------------
+    # Chat history persistence
+    # ------------------------------------------------------------------
+
+    def load_history(self) -> list:
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT role, content FROM history ORDER BY id"
+            ).fetchall()
+        return [{"role": r[0], "content": r[1]} for r in rows]
+
+    def save_history(self, messages: list) -> None:
+        with self._connect() as conn:
+            conn.execute("DELETE FROM history")
+            conn.executemany(
+                "INSERT INTO history (role, content) VALUES (?, ?)",
+                [(m["role"], m["content"]) for m in messages],
+            )
+
+    def clear_history(self) -> None:
+        with self._connect() as conn:
+            conn.execute("DELETE FROM history")

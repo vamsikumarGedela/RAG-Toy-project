@@ -6,8 +6,10 @@ from minrag.retriever import (
     reciprocal_rank_fusion,
     _deduplicate,
     rerank,
+    retrieve,
     clear_cache,
     _bm25_cache,
+    _query_cache,
 )
 
 CHUNKS = [
@@ -145,8 +147,74 @@ def test_rerank_empty_docs():
 
 # ─── clear_cache ─────────────────────────────────────────────────────────────
 
-def test_clear_cache_empties():
+def test_clear_cache_empties_bm25():
     bm25_search("test", CHUNKS, top_k=1, cache_key="toClear")
     assert "toClear" in _bm25_cache
     clear_cache()
     assert "toClear" not in _bm25_cache
+
+
+def test_clear_cache_empties_query_cache():
+    store = MagicMock()
+    store.search.return_value = []
+    store.get_all_text.return_value = []
+    embedder = MagicMock()
+    embedder.encode_one.return_value = np.zeros(8, dtype=np.float32)
+
+    retrieve("clear cache test", store, embedder, top_k=3)
+    assert len(_query_cache) > 0
+    clear_cache()
+    assert len(_query_cache) == 0
+
+
+# ─── Query cache ─────────────────────────────────────────────────────────────
+
+@pytest.fixture(autouse=True)
+def reset_query_cache():
+    clear_cache()
+    yield
+    clear_cache()
+
+
+def _make_store_embedder():
+    store = MagicMock()
+    store.search.return_value = []
+    store.get_all_text.return_value = []
+    embedder = MagicMock()
+    embedder.encode_one.return_value = np.zeros(8, dtype=np.float32)
+    return store, embedder
+
+
+def test_query_cache_populated_after_retrieve():
+    store, embedder = _make_store_embedder()
+    retrieve("what is a binary tree?", store, embedder, top_k=3)
+    assert len(_query_cache) == 1
+
+
+def test_query_cache_hit_skips_embedding():
+    store, embedder = _make_store_embedder()
+    retrieve("cached query", store, embedder, top_k=3)
+    retrieve("cached query", store, embedder, top_k=3)
+    # encode_one called only once — second call hits cache
+    assert embedder.encode_one.call_count == 1
+
+
+def test_query_cache_different_top_k_separate_entries():
+    store, embedder = _make_store_embedder()
+    retrieve("same query", store, embedder, top_k=3)
+    retrieve("same query", store, embedder, top_k=5)
+    assert len(_query_cache) == 2
+
+
+def test_query_cache_different_source_filter_separate_entries():
+    store, embedder = _make_store_embedder()
+    retrieve("same query", store, embedder, top_k=3, source_filter=None)
+    retrieve("same query", store, embedder, top_k=3, source_filter="doc.pdf")
+    assert len(_query_cache) == 2
+
+
+def test_query_cache_different_queries_separate_entries():
+    store, embedder = _make_store_embedder()
+    retrieve("question one", store, embedder, top_k=3)
+    retrieve("question two", store, embedder, top_k=3)
+    assert len(_query_cache) == 2

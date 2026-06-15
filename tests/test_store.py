@@ -114,3 +114,17 @@ def test_clear(store):
     store.clear()
     chunks, _ = store.get_all()
     assert chunks == []
+
+
+# ─── VectorStoreProtocol ─────────────────────────────────────────────────────
+
+def test_vector_store_implements_protocol(store):
+    from minrag.interfaces import VectorStoreProtocol
+    assert isinstance(store, VectorStoreProtocol)
+
+
+def test_vector_store_protocol_has_required_methods(store):
+    from minrag.interfaces import VectorStoreProtocol
+    for method in ("add", "search", "get_all", "get_all_text",
+                   "get_sources", "get_source_hashes", "delete_source", "clear"):
+        assert hasattr(store, method), f"VectorStore missing method: {method}"

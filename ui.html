@@ -483,6 +483,46 @@
     ::-webkit-scrollbar { width: 6px; }
     ::-webkit-scrollbar-track { background: transparent; }
     ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 99px; }
+
+    /* ── Loading overlay ── */
+    #loading-overlay {
+      position: fixed;
+      inset: 0;
+      background: var(--bg);
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 20px;
+      z-index: 999;
+      transition: opacity 0.5s ease;
+    }
+    #loading-overlay.hidden {
+      opacity: 0;
+      pointer-events: none;
+    }
+    .loading-logo {
+      font-size: 32px;
+      font-weight: 700;
+      letter-spacing: -0.5px;
+      color: var(--text);
+    }
+    .loading-logo span { color: var(--accent); }
+    .loading-spinner {
+      width: 40px;
+      height: 40px;
+      border: 3px solid var(--border);
+      border-top-color: var(--accent);
+      border-radius: 50%;
+      animation: spin 0.8s linear infinite;
+    }
+    .loading-text {
+      font-size: 14px;
+      color: var(--text-sec);
+    }
+    @keyframes spin {
+      to { transform: rotate(360deg); }
+    }
   </style>
 </head>
 <body>
@@ -556,9 +596,42 @@
 <!-- Toast -->
 <div id="toast"></div>
 
+<!-- Loading overlay — visible until models are ready -->
+<div id="loading-overlay">
+  <div class="loading-logo">min<span>rag</span></div>
+  <div class="loading-spinner"></div>
+  <div class="loading-text" id="loading-text">Loading AI models...</div>
+</div>
+
 <script>
   const API = 'http://127.0.0.1:8000';
   let selectedFiles = [];
+
+  // ── Wait for models to load, then hide the loading screen ──
+  (async function waitForReady() {
+    const overlay = document.getElementById('loading-overlay');
+    const loadingText = document.getElementById('loading-text');
+    let dots = 0;
+    const dotInterval = setInterval(() => {
+      dots = (dots + 1) % 4;
+      loadingText.textContent = 'Loading AI models' + '.'.repeat(dots);
+    }, 500);
+
+    while (true) {
+      try {
+        const res = await fetch(`${API}/health`);
+        if (res.ok) {
+          clearInterval(dotInterval);
+          loadingText.textContent = 'Ready!';
+          overlay.classList.add('hidden');
+          setTimeout(() => overlay.remove(), 500);
+          await loadSources();
+          return;
+        }
+      } catch {}
+      await new Promise(r => setTimeout(r, 1000));
+    }
+  })();
 
   // ── Auto-resize textarea ──
   const input = document.getElementById('user-input');
@@ -570,7 +643,7 @@
     if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(); }
   });
 
-  // ── Load PDF sources on startup ──
+  // ── Load PDF sources ──
   async function loadSources() {
     try {
       const res = await fetch(`${API}/sources`);
@@ -584,7 +657,6 @@
       });
     } catch { /* server not ready */ }
   }
-  loadSources();
 
   // ── Suggestion pills ──
   function useSuggestion(el) {
@@ -602,43 +674,131 @@
 
     hideWelcome();
     appendUser(text);
-    const thinkCard = appendThinking();
 
     const source = document.getElementById('pdf-select').value || null;
     const isHypothesis = detectHypothesis(text);
-    const endpoint = isHypothesis ? '/solve' : '/chat';
-    const body = isHypothesis
-      ? { problem: text, source }
-      : { question: text, source, top_k: 5 };
 
-    try {
-      const res = await fetch(`${API}${endpoint}`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body),
-      });
-
-      thinkCard.remove();
-
-      if (!res.ok) {
-        const err = await res.json();
-        appendError(err.detail || 'Something went wrong.');
-        return;
-      }
-
-      const data = await res.json();
-
-      if (isHypothesis) {
-        appendHypothesis(data.analysis);
-      } else {
-        appendAnswer(data.answer, data.sources, data.confidence);
-      }
-    } catch (e) {
-      thinkCard.remove();
-      appendError('Could not reach the API. Make sure the server is running.');
+    if (isHypothesis) {
+      await sendHypothesis(text, source);
+    } else {
+      await sendStream(text, source);
     }
 
     scrollBottom();
+  }
+
+  // ── Hypothesis (non-streaming) ──
+  async function sendHypothesis(text, source) {
+    const thinkCard = appendThinking();
+    try {
+      const res = await fetch(`${API}/solve`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ problem: text, source }),
+      });
+      thinkCard.remove();
+      if (!res.ok) { const e = await res.json(); appendError(e.detail || 'Something went wrong.'); return; }
+      appendHypothesis((await res.json()).analysis);
+    } catch {
+      thinkCard.remove();
+      appendError('Could not reach the API. Make sure the server is running.');
+    }
+  }
+
+  // ── Streaming chat ──
+  async function sendStream(text, source) {
+    const thinkCard = appendThinking();
+    let answerEl = null;
+    let cardRow   = null;
+
+    try {
+      const res = await fetch(`${API}/chat/stream`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ question: text, source, top_k: 5 }),
+      });
+
+      if (!res.ok) {
+        thinkCard.remove();
+        try {
+          const err = await res.json();
+          appendError(err.detail || `Error ${res.status}: Something went wrong.`);
+        } catch {
+          appendError(`Error ${res.status}: Something went wrong.`);
+        }
+        return;
+      }
+
+      const reader  = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+      let lastEvent = 'message';
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n');
+        buffer = lines.pop(); // keep last incomplete line
+
+        for (const line of lines) {
+          if (line.startsWith('event: ')) {
+            lastEvent = line.slice(7).trim();
+          } else if (line.startsWith('data: ')) {
+            const raw = line.slice(6);
+
+            if (lastEvent === 'error') {
+              thinkCard.remove();
+              appendError(JSON.parse(raw));
+              return;
+            }
+
+            if (lastEvent === 'done') break;
+
+            if (lastEvent === 'meta') {
+              const meta = JSON.parse(raw);
+              if (cardRow) addStreamFooter(cardRow, meta.sources, meta.confidence);
+            } else {
+              // first token — replace thinking card with streaming card
+              if (!answerEl) {
+                thinkCard.remove();
+                ({ answerEl, cardRow } = appendStreamCard());
+              }
+              answerEl.textContent += JSON.parse(raw);
+              scrollBottom();
+            }
+            lastEvent = 'message';
+          }
+        }
+      }
+    } catch (e) {
+      if (thinkCard.parentNode) thinkCard.remove();
+      appendError('Could not reach the API: ' + (e?.message || 'unknown error. Make sure the server is running.'));
+    }
+  }
+
+  function appendStreamCard() {
+    const row = document.createElement('div');
+    row.className = 'msg-row bot';
+    row.innerHTML = `
+      <div class="card-bot">
+        <div class="card-body">
+          <div class="card-header"><span class="mode-tag mode-query">Query</span></div>
+          <div class="answer-text"></div>
+        </div>
+        <div class="card-footer"></div>
+      </div>`;
+    chatArea().appendChild(row);
+    return { cardRow: row, answerEl: row.querySelector('.answer-text') };
+  }
+
+  function addStreamFooter(row, sources, confidence) {
+    const confClass = confidence.includes('High') ? 'conf-high'
+                    : confidence.includes('Medium') ? 'conf-medium' : 'conf-low';
+    const pills = (sources || []).map(s => `<span class="source-pill">📄 ${escHtml(s)}</span>`).join('');
+    row.querySelector('.card-footer').innerHTML =
+      `${pills}<span class="conf-pill ${confClass}">◉ ${escHtml(confidence)}</span>`;
   }
 
   // ── Detect hypothesis mode ──

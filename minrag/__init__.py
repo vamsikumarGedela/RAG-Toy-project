@@ -1,17 +1,22 @@
 import hashlib
 import json
+import logging
 import math
+import threading
 from pathlib import Path
 from dotenv import load_dotenv
 
 from .chunker import load_pdfs, chunk_pages
 from .embedder import Embedder
+from .interfaces import VectorStoreProtocol
 from .store import VectorStore
-from .retriever import retrieve, clear_cache
+from .retriever import retrieve, clear_cache, warmup_reranker
 from .llm import LLM, build_ask_messages
 from . import hypothesis as hyp
 
 load_dotenv()
+
+logger = logging.getLogger(__name__)
 
 _MAX_HISTORY_CHARS = 12_000  # ~3k tokens; trim oldest messages when exceeded
 
@@ -70,19 +75,32 @@ class RAG:
         llm_model: str = None,
         api_key: str = None,
         temperature: float = 0.0,
-        rerank_model: str = "cross-encoder/ms-marco-MiniLM-L-6-v2",
+        timeout: float = 30.0,
+        rerank_model: str = "cross-encoder/ms-marco-TinyBERT-L-2-v2",
     ):
         self.embedder = Embedder(embed_model)
         self.store = VectorStore(db_path)
         self.chunk_size = chunk_size
         self.chunk_overlap = chunk_overlap
         self.rerank_model = rerank_model
-        self.llm = LLM(provider=llm_provider, model=llm_model, api_key=api_key, temperature=temperature)
+        self.llm = LLM(provider=llm_provider, model=llm_model, api_key=api_key, temperature=temperature, timeout=timeout)
         self._db_path = Path(db_path)
-        self._query_history: list = []
+        self._query_history: list = self.store.load_history()
         self._solve_history: list = self._load_solve_history()
 
-        print(f"  minrag v{__version__} | provider: {llm_provider} | model: {self.llm.model}")
+        logger.info("minrag v%s | provider: %s | model: %s", __version__, llm_provider, self.llm.model)
+        self._ready = False
+        threading.Thread(target=self._warmup_models, daemon=True).start()
+
+    def _warmup_models(self) -> None:
+        t1 = threading.Thread(target=self.embedder.warmup, daemon=True)
+        t2 = threading.Thread(target=lambda: warmup_reranker(self.rerank_model), daemon=True)
+        t1.start()
+        t2.start()
+        t1.join()
+        t2.join()
+        self._ready = True
+        logger.info("Models ready — RAG fully warmed up.")
 
     def _solve_history_path(self) -> Path:
         return self._db_path.with_suffix(".solve_history.json")
@@ -102,11 +120,11 @@ class RAG:
         )
 
     def ingest(self, pdf_dir: str = "./pdfs", force: bool = False) -> None:
-        print(f"\n=== minrag: Ingesting PDFs from '{pdf_dir}' ===")
+        logger.info("Ingesting PDFs from '%s'", pdf_dir)
 
         all_paths = list(Path(pdf_dir).glob("**/*.pdf"))
         if not all_paths:
-            print("  No PDFs found.")
+            logger.warning("No PDFs found in '%s'", pdf_dir)
             return
 
         if force:
@@ -125,15 +143,15 @@ class RAG:
                     new_paths.append(p)
                     file_hashes[p] = fh
                 elif stored_hash != fh:
-                    print(f"  Detected change in {p.name} — re-ingesting.")
+                    logger.info("Detected change in %s — re-ingesting.", p.name)
                     self.store.delete_source(p.name)
                     new_paths.append(p)
                     file_hashes[p] = fh
             skipped = len(all_paths) - len(new_paths)
             if skipped:
-                print(f"  Skipping {skipped} already-ingested PDF(s).")
+                logger.info("Skipping %d already-ingested PDF(s).", skipped)
             if not new_paths:
-                print("  All PDFs already ingested. Nothing to do.")
+                logger.info("All PDFs already ingested. Nothing to do.")
                 return
 
         names_filter = {p.name for p in new_paths}
@@ -144,9 +162,9 @@ class RAG:
             src_path = path_map.get(c["source"])
             if src_path:
                 c["source_hash"] = file_hashes[src_path]
-        print(f"  Split into {len(chunks)} chunks")
+        logger.info("Split into %d chunks", len(chunks))
 
-        print(f"  Embedding {len(chunks)} chunks...")
+        logger.info("Embedding %d chunks...", len(chunks))
         embeddings = self.embedder.encode(
             [c["text"] for c in chunks],
             batch_size=256,
@@ -155,7 +173,7 @@ class RAG:
 
         self.store.add(chunks, embeddings)
         clear_cache()
-        print(f"=== Ingestion complete: {len(chunks)} chunks stored ===\n")
+        logger.info("Ingestion complete: %d chunks stored.", len(chunks))
 
     def _ask_core(self, question: str, source_filter: str = None, top_k: int = 5, stream: bool = False) -> dict | None:
         docs = retrieve(question, self.store, self.embedder, top_k=top_k, source_filter=source_filter, rerank_model=self.rerank_model)
@@ -168,6 +186,7 @@ class RAG:
         self._query_history.append({"role": "user", "content": question})
         self._query_history.append({"role": "assistant", "content": answer})
         self._query_history = _trim_history(self._query_history)
+        self.store.save_history(self._query_history)
         sources = sorted({f"{d['source']} p.{d['page']}" for d in docs})
         confidence = _rerank_to_confidence([d.get("rerank_score", 0) for d in docs])
         return {"answer": answer, "sources": sources, "confidence": confidence}
@@ -180,6 +199,32 @@ class RAG:
         print(f"\nConfidence: {result['confidence']}")
         print(f"Sources: {', '.join(result['sources'])}\n")
         return result["answer"]
+
+    def ask_stream(self, question: str, source_filter: str = None, top_k: int = 5):
+        """
+        Yield text tokens one by one, then a final [META] event with sources + confidence.
+        Designed for Server-Sent Events — caller never needs to call ask() separately.
+        """
+        docs = retrieve(question, self.store, self.embedder, top_k=top_k,
+                        source_filter=source_filter, rerank_model=self.rerank_model)
+        if not docs:
+            yield "[NO_RESULTS]"
+            return
+
+        messages = build_ask_messages(question, docs, history=self._query_history)
+        full_answer = ""
+        for token in self.llm.stream(messages):
+            full_answer += token
+            yield token
+
+        self._query_history.append({"role": "user", "content": question})
+        self._query_history.append({"role": "assistant", "content": full_answer})
+        self._query_history = _trim_history(self._query_history)
+        self.store.save_history(self._query_history)
+
+        sources = sorted({f"{d['source']} p.{d['page']}" for d in docs})
+        confidence = _rerank_to_confidence([d.get("rerank_score", 0) for d in docs])
+        yield f"[META]{json.dumps({'sources': sources, 'confidence': confidence})}"
 
     def ask_raw(self, question: str, source_filter: str = None, top_k: int = 5) -> dict:
         result = self._ask_core(question, source_filter, top_k, stream=False)
@@ -209,6 +254,7 @@ class RAG:
 
     def clear_history(self) -> None:
         self._query_history = []
+        self.store.clear_history()
 
     def clear_solve_history(self) -> None:
         self._solve_history = []
