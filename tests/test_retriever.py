@@ -27,6 +27,17 @@ def reset_bm25_cache():
     clear_cache()
 
 
+@pytest.fixture(autouse=True)
+def mock_cross_encoder(monkeypatch):
+    # Keep retrieve()'s rerank step offline and fast in every test in this file —
+    # individual tests can still override with their own patch() when they care
+    # about specific scores.
+    encoder = MagicMock()
+    encoder.predict.side_effect = lambda pairs: [0.0] * len(pairs)
+    monkeypatch.setattr("minrag.retriever._get_cross_encoder", lambda model=None: encoder)
+    yield
+
+
 # ─── BM25 ────────────────────────────────────────────────────────────────────
 
 def test_bm25_finds_relevant_chunk():
@@ -156,8 +167,11 @@ def test_clear_cache_empties_bm25():
 
 def test_clear_cache_empties_query_cache():
     store = MagicMock()
+    dummy_chunks = [{"text": "some chunk text", "source": "doc.pdf", "page": 1}]
+    dummy_embeddings = np.zeros((1, 8), dtype=np.float32)
     store.search.return_value = []
-    store.get_all_text.return_value = []
+    store.get_all_text.return_value = dummy_chunks
+    store.get_all.return_value = (dummy_chunks, dummy_embeddings)
     embedder = MagicMock()
     embedder.encode_one.return_value = np.zeros(8, dtype=np.float32)
 
@@ -178,8 +192,11 @@ def reset_query_cache():
 
 def _make_store_embedder():
     store = MagicMock()
+    dummy_chunks = [{"text": "some chunk text", "source": "doc.pdf", "page": 1}]
+    dummy_embeddings = np.zeros((1, 8), dtype=np.float32)
     store.search.return_value = []
-    store.get_all_text.return_value = []
+    store.get_all_text.return_value = dummy_chunks
+    store.get_all.return_value = (dummy_chunks, dummy_embeddings)
     embedder = MagicMock()
     embedder.encode_one.return_value = np.zeros(8, dtype=np.float32)
     return store, embedder

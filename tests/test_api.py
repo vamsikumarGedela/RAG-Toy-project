@@ -18,6 +18,12 @@ def mock_rag():
     rag.sources.return_value = ["doc1.pdf", "doc2.pdf"]
     rag.ask_raw.return_value = MOCK_ANSWER
     rag.solve.return_value = "Verdict: The most likely cause is X."
+    rag.list_conversations.return_value = [
+        {"id": "conv1", "title": "What is a binary tree?", "updated_at": "2026-01-01T00:00:00"}
+    ]
+    rag.get_conversation_messages.return_value = [
+        {"role": "user", "content": "hi"}, {"role": "assistant", "content": "hello"}
+    ]
     return rag
 
 
@@ -122,7 +128,7 @@ def test_ingest_multiple_pdfs(client, mock_rag):
 # ─── Chat ────────────────────────────────────────────────────────────────────
 
 def test_chat_success(client):
-    resp = client.post("/chat", json={"question": "What is a binary tree?"})
+    resp = client.post("/chat", json={"question": "What is a binary tree?", "conversation_id": "conv1"})
     assert resp.status_code == 200
     data = resp.json()
     assert data["answer"] == MOCK_ANSWER["answer"]
@@ -130,9 +136,14 @@ def test_chat_success(client):
     assert data["confidence"] == MOCK_ANSWER["confidence"]
 
 
+def test_chat_requires_conversation_id(client):
+    resp = client.post("/chat", json={"question": "test"})
+    assert resp.status_code == 422
+
+
 def test_chat_source_filter_not_found(client, mock_rag):
     mock_rag.sources.return_value = []
-    resp = client.post("/chat", json={"question": "test", "source": "missing.pdf"})
+    resp = client.post("/chat", json={"question": "test", "conversation_id": "conv1", "source": "missing.pdf"})
     assert resp.status_code == 404
 
 
@@ -140,13 +151,15 @@ def test_chat_no_relevant_content(client, mock_rag):
     mock_rag.ask_raw.return_value = {
         "answer": "", "sources": [], "confidence": "Unknown", "found": False
     }
-    resp = client.post("/chat", json={"question": "irrelevant question"})
+    resp = client.post("/chat", json={"question": "irrelevant question", "conversation_id": "conv1"})
     assert resp.status_code == 404
 
 
 def test_chat_custom_top_k(client, mock_rag):
-    client.post("/chat", json={"question": "test", "top_k": 10})
-    mock_rag.ask_raw.assert_called_once_with("test", source_filter=None, top_k=10)
+    client.post("/chat", json={"question": "test", "conversation_id": "conv1", "top_k": 10})
+    mock_rag.ask_raw.assert_called_once_with(
+        "test", "conv1", source_filter=None, top_k=10, allow_general_knowledge=False
+    )
 
 
 # ─── Solve ───────────────────────────────────────────────────────────────────
@@ -163,12 +176,34 @@ def test_solve_source_filter_not_found(client, mock_rag):
     assert resp.status_code == 404
 
 
-# ─── History ─────────────────────────────────────────────────────────────────
+# ─── Conversations ───────────────────────────────────────────────────────────
 
-def test_clear_history(client, mock_rag):
-    resp = client.delete("/history")
+def test_list_conversations(client, mock_rag):
+    resp = client.get("/conversations")
     assert resp.status_code == 200
-    mock_rag.clear_history.assert_called_once()
+    data = resp.json()
+    assert data["conversations"][0]["id"] == "conv1"
+
+
+def test_get_conversation_messages(client, mock_rag):
+    resp = client.get("/conversations/conv1/messages")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["messages"] == [
+        {"role": "user", "content": "hi"}, {"role": "assistant", "content": "hello"}
+    ]
+
+
+def test_delete_conversation(client, mock_rag):
+    resp = client.delete("/conversations/conv1")
+    assert resp.status_code == 200
+    assert resp.json()["deleted"] == "conv1"
+    mock_rag.delete_conversation.assert_called_once_with("conv1")
+
+
+def test_clear_solve_history(client, mock_rag):
+    resp = client.delete("/solve-history")
+    assert resp.status_code == 200
     mock_rag.clear_solve_history.assert_called_once()
 
 
@@ -179,7 +214,7 @@ def test_chat_stream_returns_sse_content_type(client, mock_rag):
         "Hello", " world",
         '[META]{"sources": ["doc1.pdf p.1"], "confidence": "85% (High)"}',
     ])
-    resp = client.post("/chat/stream", json={"question": "What is a binary tree?"})
+    resp = client.post("/chat/stream", json={"question": "What is a binary tree?", "conversation_id": "conv1"})
     assert resp.status_code == 200
     assert "text/event-stream" in resp.headers["content-type"]
 
@@ -189,7 +224,7 @@ def test_chat_stream_contains_expected_events(client, mock_rag):
         "Hello", " world",
         '[META]{"sources": ["doc1.pdf p.1"], "confidence": "85% (High)"}',
     ])
-    resp = client.post("/chat/stream", json={"question": "What is a binary tree?"})
+    resp = client.post("/chat/stream", json={"question": "What is a binary tree?", "conversation_id": "conv1"})
     body = resp.text
     assert "data:" in body
     assert "event: meta" in body
@@ -198,14 +233,14 @@ def test_chat_stream_contains_expected_events(client, mock_rag):
 
 def test_chat_stream_no_results(client, mock_rag):
     mock_rag.ask_stream.return_value = iter(["[NO_RESULTS]"])
-    resp = client.post("/chat/stream", json={"question": "unknown question"})
+    resp = client.post("/chat/stream", json={"question": "unknown question", "conversation_id": "conv1"})
     assert resp.status_code == 200
     assert "event: error" in resp.text
 
 
 def test_chat_stream_source_not_found(client, mock_rag):
     mock_rag.sources.return_value = []
-    resp = client.post("/chat/stream", json={"question": "test", "source": "missing.pdf"})
+    resp = client.post("/chat/stream", json={"question": "test", "conversation_id": "conv1", "source": "missing.pdf"})
     assert resp.status_code == 404
 
 
@@ -214,7 +249,7 @@ def test_chat_stream_tokens_in_order(client, mock_rag):
     mock_rag.ask_stream.return_value = iter(
         tokens + ['[META]{"sources": [], "confidence": "50% (Medium)"}']
     )
-    resp = client.post("/chat/stream", json={"question": "test"})
+    resp = client.post("/chat/stream", json={"question": "test", "conversation_id": "conv1"})
     body = resp.text
     # all tokens appear in the response body
     for token in tokens:
@@ -279,6 +314,6 @@ def test_rate_limit_exceeded_returns_429(client, mock_rag):
 
     # Exhaust the real limit (30/minute for /chat)
     for _ in range(30):
-        client.post("/chat", json={"question": "test"})
-    resp = client.post("/chat", json={"question": "test"})
+        client.post("/chat", json={"question": "test", "conversation_id": "conv1"})
+    resp = client.post("/chat", json={"question": "test", "conversation_id": "conv1"})
     assert resp.status_code == 429

@@ -94,6 +94,7 @@ def cmd_chat() -> None:
     from minrag import RAG
     provider, api_key = select_provider()
     rag = RAG(llm_provider=provider, api_key=api_key)
+    conversation_id = rag.new_conversation_id()
 
     pdf_filter = select_pdf(rag)
     scope = pdf_filter or "All PDFs"
@@ -130,7 +131,8 @@ Commands: switch | clear | exit
             continue
 
         if text.lower() == "clear":
-            rag.clear_history()
+            rag.delete_conversation(conversation_id)
+            conversation_id = rag.new_conversation_id()
             rag.clear_solve_history()
             print("History cleared.\n")
             continue
@@ -150,7 +152,7 @@ Commands: switch | clear | exit
                 print()
         else:
             print("  [query mode]\n")
-            rag.ask(question, source_filter=pdf_filter)
+            rag.ask(question, conversation_id, source_filter=pdf_filter)
 
 
 def print_usage() -> None:

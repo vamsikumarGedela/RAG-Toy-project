@@ -54,6 +54,63 @@ def load_pdfs(pdf_dir: str, names_filter: set = None) -> list:
     return pages
 
 
+def _table_to_markdown(table: list) -> str:
+    """Convert a pdfplumber-style table (list of rows, each a list of cells)
+    into a markdown table string. Returns '' if there's nothing worth keeping —
+    a single-row table isn't a table, it's noise from a false-positive detection."""
+    rows = [[("" if cell is None else str(cell).strip()) for cell in row] for row in table]
+    rows = [r for r in rows if any(c for c in r)]  # drop fully-empty rows
+    if len(rows) < 2:
+        return ""
+
+    header, *body = rows
+    width = len(header)
+    lines = [
+        "| " + " | ".join(header) + " |",
+        "| " + " | ".join(["---"] * width) + " |",
+    ]
+    for row in body:
+        row = (row + [""] * width)[:width]  # pad/truncate ragged rows to header width
+        lines.append("| " + " | ".join(row) + " |")
+    return "\n".join(lines)
+
+
+def _extract_tables_one(path: Path) -> list:
+    tables_out = []
+    try:
+        import pdfplumber
+        with pdfplumber.open(str(path)) as pdf:
+            for i, page in enumerate(pdf.pages):
+                for table in page.extract_tables():
+                    md = _table_to_markdown(table)
+                    if md:
+                        tables_out.append({"text": md, "source": path.name, "page": i + 1})
+    except Exception as e:
+        logger.warning("Could not extract tables from %s — %s", path.name, e)
+    return tables_out
+
+
+def extract_tables(pdf_dir: str, names_filter: set = None) -> list:
+    """Find every table in the given PDFs and return each as its own chunk,
+    formatted as markdown so rows/columns survive instead of being flattened
+    into a jumbled sentence. Kept fully separate from chunk_pages() — tables
+    must never be cut mid-row by sentence-based chunking."""
+    pdf_path = Path(pdf_dir)
+    paths = list(pdf_path.glob("**/*.pdf"))
+    if names_filter:
+        paths = [p for p in paths if p.name in names_filter]
+    if not paths:
+        return []
+    with ThreadPoolExecutor() as ex:
+        results = list(ex.map(_extract_tables_one, paths))
+    tables = []
+    for path, result in zip(paths, results):
+        tables.extend(result)
+        if result:
+            logger.info("Extracted %d table(s) from %s", len(result), path.name)
+    return tables
+
+
 def chunk_pages(pages: list, chunk_size: int = 800, overlap: int = 100) -> list:
     chunks = []
     for page in pages:

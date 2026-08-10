@@ -1,18 +1,19 @@
 import hashlib
 import json
 import logging
-import math
 import threading
+import uuid
 from pathlib import Path
 from dotenv import load_dotenv
 
-from .chunker import load_pdfs, chunk_pages
+from .chunker import load_pdfs, chunk_pages, extract_tables
 from .embedder import Embedder
 from .interfaces import VectorStoreProtocol
 from .store import VectorStore
 from .retriever import retrieve, clear_cache, warmup_reranker
 from .llm import LLM, build_ask_messages
 from . import hypothesis as hyp
+from . import grounding
 
 load_dotenv()
 
@@ -34,19 +35,6 @@ def _trim_history(history: list) -> list:
 
 __version__ = "0.1.0"
 __all__ = ["RAG"]
-
-
-def _rerank_to_confidence(scores: list) -> str:
-    if not scores:
-        return "Unknown"
-    avg = sum(scores) / len(scores)
-    pct = round(100 / (1 + math.exp(-avg / 2)))
-    if pct >= 70:
-        return f"{pct}% (High)"
-    elif pct >= 40:
-        return f"{pct}% (Medium)"
-    else:
-        return f"{pct}% (Low)"
 
 
 class RAG:
@@ -77,15 +65,20 @@ class RAG:
         temperature: float = 0.0,
         timeout: float = 30.0,
         rerank_model: str = "cross-encoder/ms-marco-TinyBERT-L-2-v2",
+        min_confidence: float = grounding.DEFAULT_MIN_CONFIDENCE,
     ):
         self.embedder = Embedder(embed_model)
         self.store = VectorStore(db_path)
         self.chunk_size = chunk_size
         self.chunk_overlap = chunk_overlap
         self.rerank_model = rerank_model
+        self.min_confidence = min_confidence
         self.llm = LLM(provider=llm_provider, model=llm_model, api_key=api_key, temperature=temperature, timeout=timeout)
         self._db_path = Path(db_path)
-        self._query_history: list = self.store.load_history()
+        # Chat history is per-conversation (loaded/saved by conversation_id on
+        # every call) rather than instance state — a single RAG instance is
+        # shared across every API request, so caching one history in memory
+        # here would leak between concurrent conversations.
         self._solve_history: list = self._load_solve_history()
 
         logger.info("minrag v%s | provider: %s | model: %s", __version__, llm_provider, self.llm.model)
@@ -157,6 +150,12 @@ class RAG:
         names_filter = {p.name for p in new_paths}
         pages = load_pdfs(pdf_dir, names_filter=names_filter)
         chunks = chunk_pages(pages, self.chunk_size, self.chunk_overlap)
+
+        table_chunks = extract_tables(pdf_dir, names_filter=names_filter)
+        if table_chunks:
+            logger.info("Extracted %d table chunk(s) across all PDFs", len(table_chunks))
+        chunks.extend(table_chunks)
+
         path_map = {p.name: p for p in new_paths}
         for c in chunks:
             src_path = path_map.get(c["source"])
@@ -175,32 +174,71 @@ class RAG:
         clear_cache()
         logger.info("Ingestion complete: %d chunks stored.", len(chunks))
 
-    def _ask_core(self, question: str, source_filter: str = None, top_k: int = 5, stream: bool = False) -> dict | None:
+    def new_conversation_id(self) -> str:
+        return uuid.uuid4().hex[:12]
+
+    def list_conversations(self) -> list:
+        return self.store.list_conversations()
+
+    def get_conversation_messages(self, conversation_id: str) -> list:
+        return self.store.load_history(conversation_id)
+
+    def delete_conversation(self, conversation_id: str) -> None:
+        self.store.delete_conversation(conversation_id)
+
+    def _ask_core(
+        self,
+        question: str,
+        conversation_id: str,
+        source_filter: str = None,
+        top_k: int = 5,
+        stream: bool = False,
+        allow_general_knowledge: bool = False,
+    ) -> dict | None:
         docs = retrieve(question, self.store, self.embedder, top_k=top_k, source_filter=source_filter, rerank_model=self.rerank_model)
         if not docs:
             return None
-        messages = build_ask_messages(question, docs, history=self._query_history)
+
+        history = self.store.load_history(conversation_id)
+        pct = grounding.rerank_confidence_pct([d.get("rerank_score", 0) for d in docs])
+        confidence = grounding.confidence_label(pct)
+
+        if not allow_general_knowledge and pct < self.min_confidence:
+            # Retrieval isn't confident enough to trust an LLM-generated answer —
+            # refuse deterministically instead of hoping the prompt is obeyed.
+            answer = grounding.NOT_FOUND_MESSAGE
+            if stream:
+                print(f"\nAnswer: {answer}", end="", flush=True)
+            history.append({"role": "user", "content": question})
+            history.append({"role": "assistant", "content": answer})
+            history = _trim_history(history)
+            self.store.ensure_conversation(conversation_id, question)
+            self.store.save_history(conversation_id, history)
+            return {"answer": answer, "sources": [], "citations": [], "confidence": confidence, "grounded": False}
+
+        messages = build_ask_messages(question, docs, history=history, allow_general_knowledge=allow_general_knowledge)
         if stream:
             print("\nAnswer: ", end="", flush=True)
         answer = self.llm.chat(messages, stream=stream)
-        self._query_history.append({"role": "user", "content": question})
-        self._query_history.append({"role": "assistant", "content": answer})
-        self._query_history = _trim_history(self._query_history)
-        self.store.save_history(self._query_history)
+        history.append({"role": "user", "content": question})
+        history.append({"role": "assistant", "content": answer})
+        history = _trim_history(history)
+        self.store.ensure_conversation(conversation_id, question)
+        self.store.save_history(conversation_id, history)
         sources = sorted({f"{d['source']} p.{d['page']}" for d in docs})
-        confidence = _rerank_to_confidence([d.get("rerank_score", 0) for d in docs])
-        return {"answer": answer, "sources": sources, "confidence": confidence}
+        citations = grounding.build_citations(docs)
+        return {"answer": answer, "sources": sources, "citations": citations, "confidence": confidence, "grounded": True}
 
-    def ask(self, question: str, source_filter: str = None, top_k: int = 5) -> str:
-        result = self._ask_core(question, source_filter, top_k, stream=True)
+    def ask(self, question: str, conversation_id: str, source_filter: str = None, top_k: int = 5, allow_general_knowledge: bool = False) -> str:
+        result = self._ask_core(question, conversation_id, source_filter, top_k, stream=True, allow_general_knowledge=allow_general_knowledge)
         if result is None:
             print("No relevant documents found.")
             return ""
         print(f"\nConfidence: {result['confidence']}")
-        print(f"Sources: {', '.join(result['sources'])}\n")
+        print(f"Sources: {', '.join(result['sources']) or '(none — answer not grounded in documents)'}\n")
         return result["answer"]
 
-    def ask_stream(self, question: str, source_filter: str = None, top_k: int = 5):
+    def ask_stream(self, question: str, conversation_id: str, source_filter: str = None, top_k: int = 5, allow_general_knowledge: bool = False):
         """
         Yield text tokens one by one, then a final [META] event with sources + confidence.
         Designed for Server-Sent Events — caller never needs to call ask() separately.
@@ -211,25 +249,41 @@ class RAG:
             yield "[NO_RESULTS]"
             return
 
-        messages = build_ask_messages(question, docs, history=self._query_history)
+        history = self.store.load_history(conversation_id)
+        pct = grounding.rerank_confidence_pct([d.get("rerank_score", 0) for d in docs])
+        confidence = grounding.confidence_label(pct)
+
+        if not allow_general_knowledge and pct < self.min_confidence:
+            answer = grounding.NOT_FOUND_MESSAGE
+            yield answer
+            history.append({"role": "user", "content": question})
+            history.append({"role": "assistant", "content": answer})
+            history = _trim_history(history)
+            self.store.ensure_conversation(conversation_id, question)
+            self.store.save_history(conversation_id, history)
+            yield f"[META]{json.dumps({'sources': [], 'citations': [], 'confidence': confidence, 'grounded': False})}"
+            return
+
+        messages = build_ask_messages(question, docs, history=history, allow_general_knowledge=allow_general_knowledge)
         full_answer = ""
         for token in self.llm.stream(messages):
             full_answer += token
             yield token
 
-        self._query_history.append({"role": "user", "content": question})
-        self._query_history.append({"role": "assistant", "content": full_answer})
-        self._query_history = _trim_history(self._query_history)
-        self.store.save_history(self._query_history)
+        history.append({"role": "user", "content": question})
+        history.append({"role": "assistant", "content": full_answer})
+        history = _trim_history(history)
+        self.store.ensure_conversation(conversation_id, question)
+        self.store.save_history(conversation_id, history)
 
         sources = sorted({f"{d['source']} p.{d['page']}" for d in docs})
-        confidence = _rerank_to_confidence([d.get("rerank_score", 0) for d in docs])
-        yield f"[META]{json.dumps({'sources': sources, 'confidence': confidence})}"
+        citations = grounding.build_citations(docs)
+        yield f"[META]{json.dumps({'sources': sources, 'citations': citations, 'confidence': confidence, 'grounded': True})}"
 
-    def ask_raw(self, question: str, source_filter: str = None, top_k: int = 5) -> dict:
-        result = self._ask_core(question, source_filter, top_k, stream=False)
+    def ask_raw(self, question: str, conversation_id: str, source_filter: str = None, top_k: int = 5, allow_general_knowledge: bool = False) -> dict:
+        result = self._ask_core(question, conversation_id, source_filter, top_k, stream=False, allow_general_knowledge=allow_general_knowledge)
         if result is None:
-            return {"answer": "", "sources": [], "confidence": "Unknown", "found": False}
+            return {"answer": "", "sources": [], "citations": [], "confidence": "Unknown", "grounded": False, "found": False}
         return {**result, "found": True}
 
     def solve(self, problem: str, source_filter: str = None) -> str:
@@ -251,10 +305,6 @@ class RAG:
 
     def delete_source(self, name: str) -> None:
         self.store.delete_source(name)
-
-    def clear_history(self) -> None:
-        self._query_history = []
-        self.store.clear_history()
 
     def clear_solve_history(self) -> None:
         self._solve_history = []

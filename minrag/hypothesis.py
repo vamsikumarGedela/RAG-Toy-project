@@ -227,7 +227,9 @@ def solve(
                 "1. Most likely explanation (grounded in evidence)\n"
                 "2. Why other hypotheses are less likely\n"
                 "3. Clear recommended action or conclusion\n"
-                "Be direct. Base verdict ONLY on provided evidence."
+                "Be direct. Base the verdict ONLY on the provided evidence — do not use outside "
+                "knowledge to fill gaps. If every hypothesis has weak or no supporting evidence, "
+                "say so plainly instead of picking a 'best guess' among them."
             ),
         },
     ]

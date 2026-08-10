@@ -1,0 +1,22 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python -m pytest -q)",
+      "Bash(\"/c/Program Files/Python313/python.exe\" -m pytest -q)",
+      "Bash(\"/c/Program Files/Python313/python.exe\" -m pip --version)",
+      "Bash(\"/c/Program Files/Python313/python.exe\" -m pip list)",
+      "Bash(\"/c/Program Files/Python313/python.exe\" -m pip list --user)",
+      "Bash(\"/c/Program Files/Python313/python.exe\" -c \"import sys; print\\(sys.path\\)\")",
+      "Bash(py -0p)",
+      "Bash(py -3.13 -m pytest -q)",
+      "Bash(py -3.14 -m pip show pytest)",
+      "Bash(\"/c/Program Files/Python313/python.exe\" -m pip install --user -q pytest httpx)",
+      "Bash(\"/c/Program Files/Python313/python.exe\" -m pip install --user -q -r requirements.txt)",
+      "Bash(git stash *)",
+      "Bash(\"/c/Program Files/Python313/python.exe\" -m pytest -q tests/test_retriever.py)",
+      "WebFetch(domain:openrouter.ai)",
+      "Bash(python -c ' *)",
+      "Bash(\"/c/Program Files/Python313/python.exe\" -m pip install --user -q pdfplumber)"
+    ]
+  }
+}

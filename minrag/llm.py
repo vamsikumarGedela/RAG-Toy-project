@@ -213,20 +213,47 @@ class LLM:
         return "".join(parts)
 
 
-def build_ask_messages(question: str, context_chunks: list, history: list = None) -> list:
+def build_ask_messages(
+    question: str,
+    context_chunks: list,
+    history: list = None,
+    allow_general_knowledge: bool = False,
+) -> list:
     context = "\n\n".join(
         f"[{c['source']} p.{c['page']}]\n{c['text']}"
         for c in context_chunks
     )
-    messages = [{
-        "role": "system",
-        "content": (
-            "You are a precise document assistant. Answer using ONLY the provided context. "
-            "If the answer is not in the context say: "
-            "'I could not find relevant information in the provided documents.'\n\n"
+
+    if allow_general_knowledge:
+        system_content = (
+            "You are a document assistant. Prefer the provided context when it answers the "
+            "question. If the context is incomplete or silent on the question, you may use "
+            "your own general knowledge to fill the gap — but say so explicitly when you do "
+            "(e.g. 'The documents don't cover this, but in general...').\n\n"
             f"Context:\n{context}"
-        ),
-    }]
+        )
+    else:
+        system_content = (
+            "You are a precise document assistant. Answer using ONLY the provided context below. "
+            "Do not use outside knowledge, even if you are confident it is correct.\n\n"
+            "If the context only partially covers the question, answer the part it covers and "
+            "say the rest isn't in the documents — do not bridge the gap with your own knowledge.\n\n"
+            "If the context does not contain the answer at all, respond with exactly this sentence "
+            "and nothing else: \"I couldn't find this information in the uploaded documents. "
+            "The uploaded PDFs do not contain enough information to answer this question.\"\n\n"
+            "Example — context contains the answer:\n"
+            "Context: \"[algo.pdf p.2] Bubble Sort is a comparison-based sorting algorithm.\"\n"
+            "Question: What is Bubble Sort?\n"
+            "Correct answer: Bubble Sort is a comparison-based sorting algorithm [algo.pdf p.2].\n\n"
+            "Example — context does not contain the answer:\n"
+            "Context: \"[algo.pdf p.2] Bubble Sort is a comparison-based sorting algorithm.\"\n"
+            "Question: Why is Bubble Sort slow?\n"
+            "Correct answer: I couldn't find this information in the uploaded documents. "
+            "The uploaded PDFs do not contain enough information to answer this question.\n\n"
+            f"Context:\n{context}"
+        )
+
+    messages = [{"role": "system", "content": system_content}]
     if history:
         messages.extend(history)
     messages.append({"role": "user", "content": question})

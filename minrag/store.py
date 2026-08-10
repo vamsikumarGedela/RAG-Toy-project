@@ -1,6 +1,7 @@
 import logging
 import sqlite3
 import numpy as np
+from datetime import datetime, timezone
 from pathlib import Path
 
 from .interfaces import VectorStoreProtocol
@@ -34,10 +35,19 @@ class VectorStore:
                 )
             """)
             conn.execute("""
+                CREATE TABLE IF NOT EXISTS conversations (
+                    id         TEXT PRIMARY KEY,
+                    title      TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                )
+            """)
+            conn.execute("""
                 CREATE TABLE IF NOT EXISTS history (
-                    id      INTEGER PRIMARY KEY AUTOINCREMENT,
-                    role    TEXT NOT NULL,
-                    content TEXT NOT NULL
+                    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                    conversation_id TEXT NOT NULL,
+                    role            TEXT NOT NULL,
+                    content         TEXT NOT NULL
                 )
             """)
             conn.execute("CREATE INDEX IF NOT EXISTS idx_source ON chunks(source)")
@@ -46,6 +56,24 @@ class VectorStore:
                 conn.execute("ALTER TABLE chunks ADD COLUMN source_hash TEXT")
             except Exception:
                 pass
+            # Migrate existing DBs from the old single-conversation history table
+            # (no conversation_id column) into the new threaded model. Must run
+            # before the index below — the column has to exist first.
+            try:
+                conn.execute("ALTER TABLE history ADD COLUMN conversation_id TEXT")
+            except Exception:
+                pass
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_history_conversation ON history(conversation_id)")
+            orphaned = conn.execute(
+                "SELECT COUNT(*) FROM history WHERE conversation_id IS NULL"
+            ).fetchone()[0]
+            if orphaned:
+                now = datetime.now(timezone.utc).isoformat()
+                conn.execute(
+                    "INSERT OR IGNORE INTO conversations (id, title, created_at, updated_at) VALUES (?, ?, ?, ?)",
+                    ("legacy", "Previous conversation", now, now),
+                )
+                conn.execute("UPDATE history SET conversation_id = 'legacy' WHERE conversation_id IS NULL")
 
     def add(self, chunks: list, embeddings: np.ndarray) -> None:
         with self._connect() as conn:
@@ -144,24 +172,45 @@ class VectorStore:
         self._cache = None
 
     # ------------------------------------------------------------------
-    # Chat history persistence
+    # Conversation threads + chat history persistence
     # ------------------------------------------------------------------
 
-    def load_history(self) -> list:
+    def ensure_conversation(self, conversation_id: str, title_hint: str) -> None:
+        """Create the conversation row on first use (title from the first
+        message), and bump updated_at so the sidebar sorts by recency."""
+        now = datetime.now(timezone.utc).isoformat()
+        title = title_hint.strip()[:60] or "New conversation"
+        with self._connect() as conn:
+            conn.execute(
+                "INSERT OR IGNORE INTO conversations (id, title, created_at, updated_at) VALUES (?, ?, ?, ?)",
+                (conversation_id, title, now, now),
+            )
+            conn.execute("UPDATE conversations SET updated_at = ? WHERE id = ?", (now, conversation_id))
+
+    def list_conversations(self) -> list:
         with self._connect() as conn:
             rows = conn.execute(
-                "SELECT role, content FROM history ORDER BY id"
+                "SELECT id, title, updated_at FROM conversations ORDER BY updated_at DESC"
+            ).fetchall()
+        return [{"id": r[0], "title": r[1], "updated_at": r[2]} for r in rows]
+
+    def delete_conversation(self, conversation_id: str) -> None:
+        with self._connect() as conn:
+            conn.execute("DELETE FROM history WHERE conversation_id = ?", (conversation_id,))
+            conn.execute("DELETE FROM conversations WHERE id = ?", (conversation_id,))
+
+    def load_history(self, conversation_id: str) -> list:
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT role, content FROM history WHERE conversation_id = ? ORDER BY id",
+                (conversation_id,),
             ).fetchall()
         return [{"role": r[0], "content": r[1]} for r in rows]
 
-    def save_history(self, messages: list) -> None:
+    def save_history(self, conversation_id: str, messages: list) -> None:
         with self._connect() as conn:
-            conn.execute("DELETE FROM history")
+            conn.execute("DELETE FROM history WHERE conversation_id = ?", (conversation_id,))
             conn.executemany(
-                "INSERT INTO history (role, content) VALUES (?, ?)",
-                [(m["role"], m["content"]) for m in messages],
+                "INSERT INTO history (conversation_id, role, content) VALUES (?, ?, ?)",
+                [(conversation_id, m["role"], m["content"]) for m in messages],
             )
-
-    def clear_history(self) -> None:
-        with self._connect() as conn:
-            conn.execute("DELETE FROM history")

@@ -8,7 +8,7 @@ from pathlib import Path
 from fastapi import BackgroundTasks, FastAPI, Request, UploadFile, File, HTTPException, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from slowapi.util import get_remote_address
@@ -53,7 +53,8 @@ async def lifespan(app: FastAPI):
     api_key  = os.getenv("LLM_API_KEY")
     model    = os.getenv("LLM_MODEL")
     timeout  = float(os.getenv("LLM_TIMEOUT", "30"))
-    _rag = RAG(llm_provider=provider, api_key=api_key, llm_model=model, db_path=DB_PATH, timeout=timeout)
+    min_confidence = float(os.getenv("MIN_CONFIDENCE", "35"))
+    _rag = RAG(llm_provider=provider, api_key=api_key, llm_model=model, db_path=DB_PATH, timeout=timeout, min_confidence=min_confidence)
     Path(PDF_DIR).mkdir(exist_ok=True)
     yield
 
@@ -90,13 +91,22 @@ def get_rag() -> RAG:
 # ---------------------------------------------------------------------------
 class ChatRequest(BaseModel):
     question: str
+    conversation_id: str
     source: str | None = None
     top_k: int = 5
+    allow_general_knowledge: bool = False
+
+class Citation(BaseModel):
+    source: str
+    page: int
+    text: str
 
 class ChatResponse(BaseModel):
     answer: str
     sources: list[str]
+    citations: list[Citation] = Field(default_factory=list)
     confidence: str
+    grounded: bool = True
 
 class SolveRequest(BaseModel):
     problem: str
@@ -108,6 +118,21 @@ class SolveResponse(BaseModel):
 class SourcesResponse(BaseModel):
     sources: list[str]
     count: int
+
+class ConversationSummary(BaseModel):
+    id: str
+    title: str
+    updated_at: str
+
+class ConversationListResponse(BaseModel):
+    conversations: list[ConversationSummary]
+
+class MessageOut(BaseModel):
+    role: str
+    content: str
+
+class ConversationMessagesResponse(BaseModel):
+    messages: list[MessageOut]
 
 
 # ---------------------------------------------------------------------------
@@ -127,7 +152,7 @@ def root():
         "message": "minrag API is running",
         "docs": "/docs",
         "ui": "/",
-        "endpoints": ["/ingest", "/ingest/status", "/chat", "/chat/stream", "/solve", "/sources", "/health"],
+        "endpoints": ["/ingest", "/ingest/status", "/chat", "/chat/stream", "/solve", "/sources", "/conversations", "/health"],
     }
 
 
@@ -211,6 +236,32 @@ def delete_source(name: str, rag: RAG = Depends(get_rag)):
 
 
 # ---------------------------------------------------------------------------
+# Conversations
+# ---------------------------------------------------------------------------
+
+@app.get("/conversations", response_model=ConversationListResponse, tags=["Conversations"])
+def list_conversations(rag: RAG = Depends(get_rag)):
+    return ConversationListResponse(conversations=rag.list_conversations())
+
+
+@app.get("/conversations/{conversation_id}/messages", response_model=ConversationMessagesResponse, tags=["Conversations"])
+def get_conversation_messages(conversation_id: str, rag: RAG = Depends(get_rag)):
+    return ConversationMessagesResponse(messages=rag.get_conversation_messages(conversation_id))
+
+
+@app.delete("/conversations/{conversation_id}", tags=["Conversations"])
+def delete_conversation(conversation_id: str, rag: RAG = Depends(get_rag)):
+    rag.delete_conversation(conversation_id)
+    return {"deleted": conversation_id}
+
+
+@app.delete("/solve-history", tags=["Conversations"])
+def clear_solve_history(rag: RAG = Depends(get_rag)):
+    rag.clear_solve_history()
+    return {"message": "Hypothesis-mode history cleared."}
+
+
+# ---------------------------------------------------------------------------
 # Chat & Solve
 # ---------------------------------------------------------------------------
 
@@ -223,7 +274,13 @@ def chat(request: Request, req: ChatRequest, rag: RAG = Depends(get_rag)):
             detail=f"Source '{req.source}' not found. Check GET /sources.",
         )
 
-    result = rag.ask_raw(req.question, source_filter=req.source, top_k=req.top_k)
+    result = rag.ask_raw(
+        req.question,
+        req.conversation_id,
+        source_filter=req.source,
+        top_k=req.top_k,
+        allow_general_knowledge=req.allow_general_knowledge,
+    )
 
     if not result["found"]:
         raise HTTPException(
@@ -234,7 +291,9 @@ def chat(request: Request, req: ChatRequest, rag: RAG = Depends(get_rag)):
     return ChatResponse(
         answer=result["answer"],
         sources=result["sources"],
+        citations=result.get("citations", []),
         confidence=result["confidence"],
+        grounded=result.get("grounded", True),
     )
 
 
@@ -249,7 +308,13 @@ def chat_stream(request: Request, req: ChatRequest, rag: RAG = Depends(get_rag))
 
     def generate():
         try:
-            for token in rag.ask_stream(req.question, source_filter=req.source, top_k=req.top_k):
+            for token in rag.ask_stream(
+                req.question,
+                req.conversation_id,
+                source_filter=req.source,
+                top_k=req.top_k,
+                allow_general_knowledge=req.allow_general_knowledge,
+            ):
                 if token == "[NO_RESULTS]":
                     yield f"event: error\ndata: {json.dumps('No relevant content found in the documents.')}\n\n"
                     return
@@ -276,10 +341,3 @@ def solve(request: Request, req: SolveRequest, rag: RAG = Depends(get_rag)):
 
     analysis = rag.solve(req.problem, source_filter=req.source)
     return SolveResponse(analysis=analysis)
-
-
-@app.delete("/history", tags=["Chat"])
-def clear_history(rag: RAG = Depends(get_rag)):
-    rag.clear_history()
-    rag.clear_solve_history()
-    return {"message": "Conversation history cleared."}

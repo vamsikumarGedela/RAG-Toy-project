@@ -116,6 +116,60 @@ def test_clear(store):
     assert chunks == []
 
 
+# ─── Conversations ────────────────────────────────────────────────────────────
+
+def test_ensure_conversation_creates_row(store):
+    store.ensure_conversation("c1", "What is a binary tree?")
+    convos = store.list_conversations()
+    assert len(convos) == 1
+    assert convos[0]["id"] == "c1"
+    assert convos[0]["title"] == "What is a binary tree?"
+
+
+def test_ensure_conversation_keeps_first_title(store):
+    store.ensure_conversation("c1", "First question")
+    store.ensure_conversation("c1", "Second question")
+    convos = store.list_conversations()
+    assert len(convos) == 1
+    assert convos[0]["title"] == "First question"
+
+
+def test_list_conversations_orders_by_recency(store):
+    store.ensure_conversation("c1", "older")
+    store.ensure_conversation("c2", "newer")
+    store.ensure_conversation("c1", "older")  # bump c1's updated_at again
+    convos = store.list_conversations()
+    assert convos[0]["id"] == "c1"
+
+
+def test_save_and_load_history_scoped_to_conversation(store):
+    store.ensure_conversation("c1", "q1")
+    store.ensure_conversation("c2", "q2")
+    store.save_history("c1", [{"role": "user", "content": "hi c1"}])
+    store.save_history("c2", [{"role": "user", "content": "hi c2"}])
+    assert store.load_history("c1") == [{"role": "user", "content": "hi c1"}]
+    assert store.load_history("c2") == [{"role": "user", "content": "hi c2"}]
+
+
+def test_load_history_unknown_conversation_returns_empty(store):
+    assert store.load_history("does-not-exist") == []
+
+
+def test_save_history_replaces_previous_messages(store):
+    store.ensure_conversation("c1", "q1")
+    store.save_history("c1", [{"role": "user", "content": "first"}])
+    store.save_history("c1", [{"role": "user", "content": "second"}])
+    assert store.load_history("c1") == [{"role": "user", "content": "second"}]
+
+
+def test_delete_conversation_removes_row_and_history(store):
+    store.ensure_conversation("c1", "q1")
+    store.save_history("c1", [{"role": "user", "content": "hi"}])
+    store.delete_conversation("c1")
+    assert store.list_conversations() == []
+    assert store.load_history("c1") == []
+
+
 # ─── VectorStoreProtocol ─────────────────────────────────────────────────────
 
 def test_vector_store_implements_protocol(store):
