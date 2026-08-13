@@ -38,11 +38,23 @@ Query → BM25 Keyword Search ───┘
 
 ## Features That Set It Apart
 
+**Hallucination Prevention — enforced in code, not just prompted**  
+Before any answer is generated, a confidence gate checks the retrieval score. If it's too low, the LLM is never even called — you get a direct "not found in your documents" response instead of a risk of a guessed answer. This is a deterministic control-flow decision, not a hope that the model obeys an instruction.
+
+**Source Citations — the exact quoted passage, not just a page number**  
+Every grounded answer comes back with the literal supporting text from your PDF, alongside the source and page. You can verify the answer yourself instead of trusting it blindly.
+
+**Table-Aware Chunking**  
+Tables get detected and converted to markdown *before* chunking, so rows and columns survive intact instead of being flattened into a jumbled sentence — a common failure mode in naive PDF pipelines.
+
 **Hybrid Retrieval — not just vector search**  
 Semantic embeddings catch meaning. BM25 catches exact keywords. Together they catch everything. Reciprocal Rank Fusion merges both rankings intelligently.
 
 **Cross-Encoder Reranking**  
 After retrieval, a dedicated reranker model scores every result against your query. The top answers rise to the surface. Less noise. Better answers.
+
+**Multiple Conversations — like ChatGPT's chat history**  
+Every conversation is its own persisted thread, switchable from a sidebar, auto-titled from your first question. Nothing is shared or mixed between threads.
 
 **Hypothesis Mode — beyond Q&A**  
 Ask *why* or *how come* and minrag doesn't just retrieve — it thinks. It generates multiple competing hypotheses, retrieves independent evidence for each, scores confidence, and delivers a verdict. Like having a research analyst in your PDF.
@@ -90,12 +102,14 @@ Every module is small, readable, and purposeful:
 
 ```
 minrag/
-├── chunker.py      — smart PDF text extraction with sentence-aware splitting
+├── chunker.py      — sentence-aware chunking + table-aware extraction (pdfplumber)
 ├── embedder.py     — lazy-loaded sentence transformers, L2-normalized
-├── store.py        — WAL-mode SQLite with 64MB cache, history persistence
+├── store.py        — WAL-mode SQLite, per-conversation history, 64MB cache
 ├── retriever.py    — hybrid BM25 + vector fusion with LRU-cached indexes
 ├── llm.py          — streaming, timeout support, 4 providers
-└── hypothesis.py   — parallel evidence retrieval + confidence scoring
+├── hypothesis.py   — parallel evidence retrieval + confidence scoring
+└── grounding.py    — the hallucination-prevention gate: confidence scoring,
+                       citation building, and the deterministic refusal path
 ```
 
 No file is over 300 lines. Every function does one thing. Read it in an afternoon.
@@ -123,9 +137,10 @@ python run.py
 
 ## Web UI
 
-Upload PDFs → ask questions → get streaming answers with source citations and confidence scores.  
+Upload PDFs → ask questions → get streaming, markdown-rendered answers with expandable source citations and confidence scores.  
+Switch between multiple conversation threads from the sidebar — each one auto-titled and persisted independently.  
+Copy any answer or code block with one click.  
 Delete individual PDFs without touching the others.  
-Switch between PDFs mid-conversation from the navbar.  
 Chat history survives server restarts.
 
 ---
@@ -151,10 +166,13 @@ Full REST API with Swagger docs at `/docs`.
 | `GET` | `/ingest/status` | Check background ingest progress |
 | `GET` | `/sources` | List all documents |
 | `DELETE` | `/sources/{name}` | Remove a document |
-| `POST` | `/chat` | Ask a question (full response) |
+| `POST` | `/chat` | Ask a question (full response, with citations) |
 | `POST` | `/chat/stream` | Ask a question (streaming via SSE) |
 | `POST` | `/solve` | Hypothesis analysis |
-| `DELETE` | `/history` | Clear chat history |
+| `GET` | `/conversations` | List all conversation threads |
+| `GET` | `/conversations/{id}/messages` | Load a conversation's history |
+| `DELETE` | `/conversations/{id}` | Delete a conversation |
+| `DELETE` | `/solve-history` | Clear hypothesis-mode memory |
 | `GET` | `/health` | Server + model readiness check |
 
 ---
@@ -168,7 +186,7 @@ Full REST API with Swagger docs at `/docs`.
 | Keyword search | `rank-bm25` |
 | Vector store | SQLite (WAL mode) |
 | History store | SQLite (same DB, history table) |
-| PDF parsing | `pypdf` |
+| PDF parsing | `pypdf` (text) + `pdfplumber` (tables) |
 | Web framework | FastAPI + uvicorn |
 | LLM interface | OpenAI SDK + native Anthropic |
 
@@ -187,7 +205,7 @@ Full REST API with Swagger docs at `/docs`.
 pytest
 ```
 
-Full test coverage across chunker, store, retriever, hypothesis engine, and all API endpoints.
+130+ tests across chunking (including table extraction), the confidence-gate/grounding logic, storage, hybrid retrieval, the hypothesis engine, and every API endpoint.
 
 ---
 
